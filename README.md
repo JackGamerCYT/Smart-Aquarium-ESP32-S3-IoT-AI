@@ -112,6 +112,6 @@ Dưới đây là bảng ma trận kiểm thử được thiết kế khoa học
 
 ## 5. CÁC NGUYÊN TẮC AN TOÀN TRONG QUÁ TRÌNH THỰC NGHIỆM
 Khi tiến hành kiểm thử các linh kiện công suất lớn, nhóm nghiên cứu tuân thủ nghiêm ngặt các nguyên tắc sau:
-1.  **Tuyệt đối không chạy sò Peltier chay:** Mặt nóng của sò Peltier có thể đạt tới \\(80^\circ\text{C}\\) trong vòng vài giây nếu không có tản nhiệt quạt. Việc chạy sò không kèm tản nhiệt khí sẽ làm hỏng sò vĩnh viễn ngay lập tức.
+1.  **Tuyệt đối không chạy sò Peltier chay:** Mặt nóng của sò Peltier có thể đạt tới 80 độ C trong vòng vài giây nếu không có tản nhiệt quạt. Việc chạy sò không kèm tản nhiệt khí sẽ làm hỏng sò vĩnh viễn ngay lập tức.
 2.  **Mồi nước cho bơm:** Động cơ bơm hút nước màng rung 12V cần có dòng nước mồi, tránh chạy khô liên tục quá lâu gây mòn và nóng buồng bơm.
 3.  **Điểm chung mát (Common GND):** GND động lực của sò Peltier và GND tín hiệu của ESP32-S3 được kết nối chụm chung tại chân ra GND của LM2596 để tránh hiện tượng dòng rò từ sò lạnh làm loạn xung điều khiển của vi điều khiển.
