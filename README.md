@@ -106,7 +106,7 @@ Dưới đây là bảng ma trận kiểm thử được thiết kế khoa học
 | 4 | **Cảm biến DS18B20** | Nhúng cảm biến vào nước ấm | Nhiệt độ tăng đều, phản hồi mượt mà không bị ngắt quãng. | **ĐẠT** |
 | 5 | **Động cơ bơm hút** | Kích chân GPIO 18 (LOW) | Rơ-le 1 kêu "tách", động cơ bơm quay khỏe, hút nước tuần hoàn qua khối nhôm. | **ĐẠT** |
 | 6 | **Sò lạnh Chiller** | Kích chân GPIO 19 (LOW) | Rơ-le 2 kích hoạt, quạt tản nhiệt quay mạnh, khối nhôm Water Block lạnh dần. | **ĐẠT** |
-| 7 | **Hysteresis Loop** | Giả lập nhiệt độ biến thiên | Tự động bật làm mát khi \\(T \ge 27.0^\circ\text{C}\\) và ngắt khi \\(T \le 25.5^\circ\text{C}\\). | **ĐẠT** |
+| 7 | **Hysteresis Loop** | Giả lập nhiệt độ biến thiên | Tự động bật làm mát. | **ĐẠT** |
 
 ---
 
