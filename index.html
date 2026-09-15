@@ -4,11 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>BỂ CÁ THÔNG MINH AI - IOT DASHBOARD</title>
-    <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- MQTT.js -->
     <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
-    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body class="bg-slate-900 text-slate-100 min-h-screen p-4 md:p-8 font-sans">
@@ -17,10 +14,8 @@
         <!-- HEADER -->
         <header class="flex flex-col md:flex-row justify-between items-center bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl gap-4">
             <div>
-                <h1 class="text-2xl md:text-3xl font-bold text-cyan-400 flex items-center gap-2">
-                    🐠 Bể Cá Thông Minh AI
-                </h1>
-                <p class="text-slate-400 text-sm mt-1">Hệ thống giám sát & Điều khiển thiết bị IoT Realtime</p>
+                <h1 class="text-2xl md:text-3xl font-bold text-cyan-400">🐠 Bể Cá Thông Minh AI</h1>
+                <p class="text-slate-400 text-sm mt-1">Giám sát & Điều khiển phần cứng IoT Realtime</p>
             </div>
             <div id="status-badge" class="px-4 py-2 rounded-full text-xs font-bold bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-2">
                 <span class="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping"></span>
@@ -31,12 +26,9 @@
         <!-- DASHBOARD GRID -->
         <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
             
-            <!-- CARD 1: NHIỆT ĐỘ -->
+            <!-- NHIỆT ĐỘ -->
             <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 flex flex-col justify-between shadow-lg">
-                <div class="flex justify-between items-center">
-                    <span class="text-slate-400 text-sm font-medium">Nhiệt Độ Nước (DS18B20)</span>
-                    <span class="text-cyan-400 bg-cyan-950/80 px-2.5 py-1 rounded-lg text-xs font-semibold">Realtime</span>
-                </div>
+                <span class="text-slate-400 text-sm font-medium">Nhiệt Độ Nước (DS18B20)</span>
                 <div class="my-6 text-center">
                     <span id="temp-val" class="text-6xl font-black text-cyan-300">--.-</span>
                     <span class="text-2xl text-slate-400 font-bold ml-1">°C</span>
@@ -44,264 +36,138 @@
                 <div class="text-xs text-slate-500 text-center">Cập nhật tự động từ ESP32-S3</div>
             </div>
 
-            <!-- CARD 2: CHO CÁ ĂN -->
-            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 flex flex-col justify-between shadow-lg">
+            <!-- CHO CÁ ĂN & SELF-TEST -->
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 flex flex-col justify-between shadow-lg space-y-3">
                 <div class="flex justify-between items-center">
                     <span class="text-slate-400 text-sm font-medium">Lần Cho Cá Ăn</span>
-                    <span class="text-amber-400 bg-amber-950/80 px-2.5 py-1 rounded-lg text-xs font-semibold">Servo MG90S</span>
+                    <span id="feed-count" class="text-2xl font-black text-amber-400">0 lần</span>
                 </div>
-                <div class="my-4 text-center">
-                    <span id="feed-count" class="text-6xl font-black text-amber-400">0</span>
-                    <span class="text-lg text-slate-400 font-bold ml-1">lần</span>
-                </div>
-                <button id="btn-feed" onclick="handleFeed()" class="w-full py-3.5 bg-amber-500 hover:bg-amber-600 active:scale-95 font-bold rounded-xl text-slate-950 transition-all flex justify-center items-center gap-2 shadow-lg shadow-amber-500/10">
+                <button id="btn-feed" onclick="handleFeed()" class="w-full py-3 bg-amber-500 hover:bg-amber-600 active:scale-95 font-bold rounded-xl text-slate-950 transition-all">
                     🚀 CHO CÁ ĂN NGAY
+                </button>
+                <button id="btn-test" onclick="handleSelfTest()" class="w-full py-2.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 font-bold rounded-xl text-white text-xs transition-all">
+                    🧪 CHẨN ĐOÁN MẠCH (SELF-TEST)
                 </button>
             </div>
 
-            <!-- CARD 3: CÔNG TẮC ĐIỀU KHIỂN RELAY -->
+            <!-- ĐIỀU KHIỂN RƠ-LE -->
             <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-lg flex flex-col justify-between space-y-4">
-                <h3 class="text-base font-semibold text-slate-200 border-b border-slate-700 pb-2 flex items-center justify-between">
-                    <span>Công Tắc Bật/Tắt</span>
-                    <span class="text-xs font-normal text-slate-400">Click để đổi trạng thái</span>
-                </h3>
+                <h3 class="text-base font-semibold text-slate-200 border-b border-slate-700 pb-2">Công Tắc Điều Khiển Rơ-Le</h3>
                 
-                <!-- Toggle Chiller -->
                 <div class="flex justify-between items-center p-3.5 bg-slate-900/70 rounded-xl border border-slate-700/60">
                     <div>
-                        <div class="font-semibold text-sm text-slate-200">Sò Lạnh Chiller</div>
+                        <div class="font-semibold text-sm">Sò Lạnh Chiller</div>
                         <div class="text-xs text-slate-400">Relay 1 (GPIO 19)</div>
                     </div>
-                    <button id="btn-chiller" onclick="toggleDevice('chiller')" class="px-5 py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs font-extrabold transition-all shadow-md active:scale-95">
-                        OFF
-                    </button>
+                    <button id="btn-chiller" onclick="toggleDevice('chiller')" class="px-5 py-2.5 bg-slate-700 text-slate-300 rounded-lg text-xs font-extrabold transition-all">OFF</button>
                 </div>
 
-                <!-- Toggle Pump -->
                 <div class="flex justify-between items-center p-3.5 bg-slate-900/70 rounded-xl border border-slate-700/60">
                     <div>
-                        <div class="font-semibold text-sm text-slate-200">Máy Bơm Lọc Nước</div>
+                        <div class="font-semibold text-sm">Máy Bơm Lọc Nước</div>
                         <div class="text-xs text-slate-400">Relay 2 (GPIO 18)</div>
                     </div>
-                    <button id="btn-pump" onclick="toggleDevice('pump')" class="px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 rounded-lg text-xs font-extrabold transition-all shadow-md active:scale-95">
-                        ON
-                    </button>
+                    <button id="btn-pump" onclick="toggleDevice('pump')" class="px-5 py-2.5 bg-emerald-500 text-slate-950 rounded-lg text-xs font-extrabold transition-all">ON</button>
                 </div>
             </div>
         </div>
 
-        <!-- ĐỒ THỊ NHIỆT ĐỘ & LOG HOẠT ĐỘNG -->
+        <!-- ĐỒ THỊ & LOG -->
         <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <!-- ĐỒ THỊ -->
             <div class="lg:col-span-2 bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl">
-                <h3 class="text-base font-semibold text-slate-200 mb-4 flex items-center gap-2">
-                    📈 Biểu Đồ Diễn Biến Nhiệt Độ Realtime
-                </h3>
-                <div class="h-64">
-                    <canvas id="tempChart"></canvas>
-                </div>
+                <h3 class="text-base font-semibold text-slate-200 mb-4">📈 Biểu Đồ Nhiệt Độ Realtime</h3>
+                <div class="h-64"><canvas id="tempChart"></canvas></div>
             </div>
 
-            <!-- LOG CONSOLE HOẠT ĐỘNG -->
             <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 shadow-xl flex flex-col justify-between">
                 <div class="flex justify-between items-center mb-3">
                     <h3 class="text-base font-semibold text-slate-200">📋 Nhật Ký Lệnh IoT</h3>
-                    <button onclick="clearLog()" class="text-xs text-slate-400 hover:text-slate-200 underline">Xóa log</button>
+                    <button onclick="clearLog()" class="text-xs text-slate-400 underline">Xóa log</button>
                 </div>
                 <div id="log-box" class="bg-slate-950 p-3.5 rounded-xl font-mono text-xs text-emerald-400 h-56 overflow-y-auto space-y-1.5 border border-slate-800">
-                    <div class="text-slate-500">[Khởi tạo] Đang kết nối MQTT Broker...</div>
+                    <div class="text-slate-500">[Khởi tạo] Đang kết nối MQTT...</div>
                 </div>
             </div>
         </div>
     </div>
 
     <script>
-        // Cấu hình MQTT Broker HiveMQ WebSockets
         const MQTT_BROKER = "wss://broker.hivemq.com:8884/mqtt";
         const TOPIC_TELEMETRY = "beca/ai/telemetry";
         const TOPIC_COMMAND = "beca/ai/command";
 
-        // Khởi tạo client
         const client = mqtt.connect(MQTT_BROKER);
+        let state = { chiller: false, pump: true, feed_count: 0 };
 
-        // Trạng thái thiết bị local
-        let state = {
-            chiller: false,
-            pump: true,
-            feed_count: 0
-        };
-
-        // Khởi tạo đồ thị Chart.js
         const ctx = document.getElementById('tempChart').getContext('2d');
         const tempChart = new Chart(ctx, {
             type: 'line',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Nhiệt độ (°C)',
-                    data: [],
-                    borderColor: '#22d3ee',
-                    backgroundColor: 'rgba(34, 211, 238, 0.15)',
-                    borderWidth: 2.5,
-                    fill: true,
-                    tension: 0.35,
-                    pointRadius: 4,
-                    pointBackgroundColor: '#22d3ee'
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' } },
-                    y: { grid: { color: '#334155' }, ticks: { color: '#94a3b8' }, suggestedMin: 20, suggestedMax: 35 }
-                },
-                plugins: { legend: { labels: { color: '#cbd5e1' } } }
-            }
+            data: { labels: [], datasets: [{ label: 'Nhiệt độ (°C)', data: [], borderColor: '#22d3ee', backgroundColor: 'rgba(34, 211, 238, 0.15)', borderWidth: 2.5, fill: true, tension: 0.35 }] },
+            options: { responsive: true, maintainAspectRatio: false, scales: { x: { grid: { color: '#334155' } }, y: { grid: { color: '#334155' }, suggestedMin: 20, suggestedMax: 35 } } }
         });
 
-        // Xử lý sự kiện kết nối MQTT
         client.on('connect', () => {
             updateStatusBadge(true);
-            addLog("✅ Đã kết nối MQTT Broker thành công!");
-            client.subscribe(TOPIC_TELEMETRY, (err) => {
-                if (!err) addLog(`📡 Đã đăng ký kênh: ${TOPIC_TELEMETRY}`);
-            });
+            addLog("✅ Đã kết nối MQTT Broker WebSockets!");
+            client.subscribe(TOPIC_TELEMETRY);
         });
 
-        client.on('offline', () => {
-            updateStatusBadge(false);
-            addLog("❌ Mất kết nối tới MQTT Broker!");
-        });
-
-        client.on('error', (err) => {
-            addLog(`⚠️ Lỗi MQTT: ${err.message}`);
-        });
-
-        // Nhận dữ liệu từ ESP32-S3
         client.on('message', (topic, message) => {
             if (topic === TOPIC_TELEMETRY) {
-                try {
-                    const data = JSON.parse(message.toString());
-                    addLog(`📥 Nhận Telemetry: ${message.toString()}`);
-                    
-                    if (data.temp !== undefined) {
-                        document.getElementById('temp-val').innerText = parseFloat(data.temp).toFixed(1);
-                        updateChart(data.temp);
-                    }
-                    if (data.feed_count !== undefined) {
-                        state.feed_count = data.feed_count;
-                        document.getElementById('feed-count').innerText = state.feed_count;
-                    }
-                    if (data.chiller !== undefined) {
-                        state.chiller = !!data.chiller;
-                        renderButton('btn-chiller', state.chiller);
-                    }
-                    if (data.pump !== undefined) {
-                        state.pump = !!data.pump;
-                        renderButton('btn-pump', state.pump);
-                    }
-                } catch (e) {
-                    addLog(`⚠️ Dữ liệu không đúng định dạng JSON: ${message.toString()}`);
+                const data = JSON.parse(message.toString());
+                addLog(`📥 Telemetry: ${message.toString()}`);
+                if (data.temp !== undefined) {
+                    document.getElementById('temp-val').innerText = parseFloat(data.temp).toFixed(1);
+                    updateChart(data.temp);
                 }
+                if (data.feed_count !== undefined) {
+                    state.feed_count = data.feed_count;
+                    document.getElementById('feed-count').innerText = `${state.feed_count} lần`;
+                }
+                if (data.chiller !== undefined) { state.chiller = !!data.chiller; renderButton('btn-chiller', state.chiller); }
+                if (data.pump !== undefined) { state.pump = !!data.pump; renderButton('btn-pump', state.pump); }
             }
         });
 
-        // Cập nhật trạng thái giao diện Nút Bấm ngay lập tức
         function renderButton(id, isOn) {
             const btn = document.getElementById(id);
             if (!btn) return;
-            if (isOn) {
-                btn.className = "px-5 py-2.5 bg-emerald-500 hover:bg-emerald-600 text-slate-950 rounded-lg text-xs font-extrabold transition-all shadow-md active:scale-95";
-                btn.innerText = "ON (BẬT)";
-            } else {
-                btn.className = "px-5 py-2.5 bg-slate-700 hover:bg-slate-600 text-slate-300 rounded-lg text-xs font-extrabold transition-all shadow-md active:scale-95";
-                btn.innerText = "OFF (TẮT)";
-            }
+            btn.className = isOn ? "px-5 py-2.5 bg-emerald-500 text-slate-950 rounded-lg text-xs font-extrabold" : "px-5 py-2.5 bg-slate-700 text-slate-300 rounded-lg text-xs font-extrabold";
+            btn.innerText = isOn ? "ON (BẬT)" : "OFF (TẮT)";
         }
 
-        // Xử lý bấm công tắc Chiller / Pump
         function toggleDevice(device) {
-            if (device === 'chiller') {
-                state.chiller = !state.chiller;
-                renderButton('btn-chiller', state.chiller);
-                sendMQTTCommand('chiller', state.chiller ? 'ON' : 'OFF');
-            } else if (device === 'pump') {
-                state.pump = !state.pump;
-                renderButton('btn-pump', state.pump);
-                sendMQTTCommand('pump', state.pump ? 'ON' : 'OFF');
-            }
+            if (device === 'chiller') { state.chiller = !state.chiller; renderButton('btn-chiller', state.chiller); sendCommand('chiller', state.chiller ? 'ON' : 'OFF'); }
+            else if (device === 'pump') { state.pump = !state.pump; renderButton('btn-pump', state.pump); sendCommand('pump', state.pump ? 'ON' : 'OFF'); }
         }
 
-        // Xử lý bấm Cho Cá Ăn
-        function handleFeed() {
-            state.feed_count++;
-            document.getElementById('feed-count').innerText = state.feed_count;
-            
-            const btn = document.getElementById('btn-feed');
-            btn.innerText = "⏳ ĐANG BẬT SERVO...";
-            btn.disabled = true;
-            
-            sendMQTTCommand('feed', 'ON');
+        function handleFeed() { sendCommand('feed', 'ON'); }
+        function handleSelfTest() { sendCommand('test', 'START'); }
 
-            setTimeout(() => {
-                btn.innerText = "🚀 CHO CÁ ĂN NGAY";
-                btn.disabled = false;
-            }, 3500);
-        }
-
-        // Gửi lệnh qua MQTT
-        function sendMQTTCommand(device, action) {
+        function sendCommand(device, action) {
             const payload = JSON.stringify({ device: device, action: action });
-            if (client.connected) {
-                client.publish(TOPIC_COMMAND, payload);
-                addLog(`📤 Đã phát lệnh: ${payload}`);
-            } else {
-                addLog(`⚠️ Chưa kết nối Broker! Lệnh [${payload}] sẽ gửi khi online.`);
-            }
+            if (client.connected) { client.publish(TOPIC_COMMAND, payload); addLog(`📤 Phát lệnh: ${payload}`); }
         }
 
-        // Cập nhật biểu đồ Chart.js
         function updateChart(temp) {
-            const now = new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            if (tempChart.data.labels.length > 12) {
-                tempChart.data.labels.shift();
-                tempChart.data.datasets.data.shift();
-            }
-            tempChart.data.labels.push(now);
-            tempChart.data.datasets.data.push(temp);
-            tempChart.update();
+            const now = new Date().toLocaleTimeString('vi-VN');
+            if (tempChart.data.labels.length > 12) { tempChart.data.labels.shift(); tempChart.data.datasets.data.shift(); }
+            tempChart.data.labels.push(now); tempChart.data.datasets.data.push(temp); tempChart.update();
         }
 
-        // Hàm hiển thị Log
         function addLog(msg) {
             const logBox = document.getElementById('log-box');
             const time = new Date().toLocaleTimeString('vi-VN');
             const div = document.createElement('div');
             div.innerText = `[${time}] ${msg}`;
-            logBox.appendChild(div);
-            logBox.scrollTop = logBox.scrollHeight;
+            logBox.appendChild(div); logBox.scrollTop = logBox.scrollHeight;
         }
 
-        function clearLog() {
-            document.getElementById('log-box').innerHTML = '';
+        function clearLog() { document.getElementById('log-box').innerHTML = ''; }
+        function updateStatusBadge(isConn) {
+            document.getElementById('status-badge').className = isConn ? "px-4 py-2 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-2" : "px-4 py-2 rounded-full text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30 flex items-center gap-2";
+            document.getElementById('status-text').innerText = isConn ? "● Đã Kết Nối MQTT Web" : "Mất Kết Nối";
         }
-
-        function updateStatusBadge(isConnected) {
-            const badge = document.getElementById('status-badge');
-            const text = document.getElementById('status-text');
-            if (isConnected) {
-                badge.className = "px-4 py-2 rounded-full text-xs font-bold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 flex items-center gap-2";
-                text.innerText = "● Đã Kết Nối MQTT Web";
-            } else {
-                badge.className = "px-4 py-2 rounded-full text-xs font-bold bg-red-500/20 text-red-400 border border-red-500/30 flex items-center gap-2";
-                text.innerText = "Mất Kết Nối";
-            }
-        }
-
-        // Khởi tạo trạng thái nút ban đầu
-        renderButton('btn-chiller', state.chiller);
-        renderButton('btn-pump', state.pump);
     </script>
 </body>
 </html>
