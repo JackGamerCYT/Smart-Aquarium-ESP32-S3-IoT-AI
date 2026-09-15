@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BỂ CÁ THÔNG MINH AI - IOT DASHBOARD</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- MQTT.js CDN -->
+    <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+</head>
+<body class="bg-slate-900 text-white min-h-screen p-4 md:p-8">
+    <div class="max-w-4xl mx-auto space-y-6">
+        
+        <!-- Header -->
+        <header class="flex justify-between items-center bg-slate-800 p-6 rounded-2xl border border-slate-700">
+            <div>
+                <h1 class="text-2xl font-bold text-cyan-400">🐠 Bể Cá Thông Minh AI</h1>
+                <p class="text-slate-400 text-sm">Hệ thống giám sát & Điều khiển IoT</p>
+            </div>
+            <div id="status-badge" class="px-4 py-1.5 rounded-full text-xs font-semibold bg-red-500/20 text-red-400 border border-red-500/30">
+                Đang kết nối...
+            </div>
+        </header>
+
+        <!-- Thẻ hiển thị nhiệt độ -->
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 flex flex-col items-center justify-center">
+                <span class="text-slate-400 text-sm mb-2">Nhiệt Độ Nước Thực Tế</span>
+                <div class="text-5xl font-extrabold text-cyan-300 my-2">
+                    <span id="temp-val">--.-</span> °C
+                </div>
+                <p class="text-xs text-slate-500">Cập nhật mỗi 2 giây từ cảm biến DS18B20</p>
+            </div>
+
+            <!-- Công tắc điều khiển -->
+            <div class="bg-slate-800 p-6 rounded-2xl border border-slate-700 space-y-4">
+                <h3 class="text-lg font-semibold text-slate-200 mb-2">Điều Khiển Bơm & Chiller</h3>
+                
+                <!-- Toggle Chiller -->
+                <div class="flex justify-between items-center p-3 bg-slate-700/50 rounded-xl">
+                    <span class="font-medium">Sò Lạnh Chiller (Relay 1)</span>
+                    <button id="btn-chiller" onclick="toggleDevice('chiller')" class="px-5 py-2 bg-slate-600 rounded-lg text-sm font-bold transition">OFF</button>
+                </div>
+
+                <!-- Toggle Bơm Lọc -->
+                <div class="flex justify-between items-center p-3 bg-slate-700/50 rounded-xl">
+                    <span class="font-medium">Máy Bơm Lọc (Relay 2)</span>
+                    <button id="btn-pump" onclick="toggleDevice('pump')" class="px-5 py-2 bg-emerald-600 rounded-lg text-sm font-bold transition">ON</button>
+                </div>
+
+                <!-- Nút Cho Ăn -->
+                <button onclick="sendCommand('feed', 'ON')" class="w-full py-3 bg-amber-500 hover:bg-amber-600 font-bold rounded-xl text-slate-900 transition flex justify-center items-center gap-2">
+                    🚀 CHO CÁ ĂN NGAY (Servo MG90S)
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Cấu hình kết nối MQTT Broker (HiveMQ Cloud WebSockets)
+        const broker = "wss://broker.hivemq.com:8884/mqtt";
+        const topicTelemetry = "beca/ai/telemetry";
+        const topicCmd = "beca/ai/command";
+
+        const client = mqtt.connect(broker);
+
+        let chillerState = false;
+        let pumpState = true;
+
+        client.on('connect', () => {
+            document.getElementById('status-badge').className = "px-4 py-1.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/30";
+            document.getElementById('status-badge').innerText = "● Đã kết nối Website";
+            client.subscribe(topicTelemetry);
+        });
+
+        client.on('message', (topic, message) => {
+            if (topic === topicTelemetry) {
+                const data = JSON.parse(message.toString());
+                document.getElementById('temp-val').innerText = data.temp;
+                
+                // Cập nhật trạng thái nút
+                updateBtn('btn-chiller', data.chiller);
+                updateBtn('btn-pump', data.pump);
+            }
+        });
+
+        function updateBtn(id, state) {
+            const btn = document.getElementById(id);
+            if (state) {
+                btn.className = "px-5 py-2 bg-emerald-500 text-slate-900 rounded-lg text-sm font-bold transition";
+                btn.innerText = "ON";
+            } else {
+                btn.className = "px-5 py-2 bg-slate-600 text-white rounded-lg text-sm font-bold transition";
+                btn.innerText = "OFF";
+            }
+        }
+
+        function toggleDevice(device) {
+            if (device === 'chiller') {
+                chillerState = !chillerState;
+                sendCommand('chiller', chillerState ? 'ON' : 'OFF');
+            } else if (device === 'pump') {
+                pumpState = !pumpState;
+                sendCommand('pump', pumpState ? 'ON' : 'OFF');
+            }
+        }
+
+        function sendCommand(device, action) {
+            const payload = JSON.stringify({ device: device, action: action });
+            client.publish(topicCmd, payload);
+        }
+    </script>
+</body>
+</html>
