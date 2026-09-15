@@ -1,0 +1,14 @@
+{
+  "version": 2,
+  "name": "smart-aquarium-ai",
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/api/$1"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/$1"
+    }
+  ]
+}
