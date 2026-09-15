@@ -303,5 +303,24 @@
         renderButton('btn-chiller', state.chiller);
         renderButton('btn-pump', state.pump);
     </script>
+        window.toggleDevice = function(deviceId) {
+      const btn = document.getElementById(`btn-${deviceId}`);
+      if (!btn) return;
+
+      const isCurrentlyOff = btn.textContent.trim() === 'OFF';
+
+      if (isCurrentlyOff) {
+        btn.textContent = 'ON';
+        btn.classList.remove('bg-slate-700', 'text-slate-300');
+        btn.classList.add('bg-emerald-600', 'text-white');
+      } else {
+        btn.textContent = 'OFF';
+        btn.classList.remove('bg-emerald-600', 'text-white');
+        btn.classList.add('bg-slate-700', 'text-slate-300');
+      }
+
+      console.log(`[Rơ-le ${deviceId}] Trạng thái:`, isCurrentlyOff ? 'ON' : 'OFF');
+    };
+  </script>
 </body>
 </html>
