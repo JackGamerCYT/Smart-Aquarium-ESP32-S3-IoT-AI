@@ -1,93 +1,77 @@
-# 🐠 BỂ CÁ THÔNG MINH AI (SMART AQUARIUM IOT & AI)
+# 🐠 SMART AQUARIUM IoT – BỂ CÁ THÔNG MINH (ESP32-S3)
 
-Hệ thống quản lý bể cá thông minh 4.5L sử dụng vi điều khiển **ESP32-S3 DevKit**, cảm biến nhiệt độ DS18B20 chống nước, màn hình OLED 1.3" I2C, Relay Chiller tản nhiệt Peltier, Relay máy bơm lọc nước và Động cơ Servo MG90S cho cá ăn tự động. Đồng bộ dữ liệu hai chiều thời gian thực qua **MQTT Broker (HiveMQ)** và giao diện Web Dashboard triển khai trên **Vercel**.
+Hệ thống quản lý bể cá mini 4.5 L: **tự động làm mát** bằng sò Peltier (hysteresis 25.5–27.0°C), **cho cá ăn theo lịch thời gian thực** (RTC DS3231 – chạy cả khi mất Internet/mất điện), hiển thị OLED tại chỗ và **giám sát/điều khiển từ xa** qua MQTT + Web Dashboard trên Vercel.
 
----
+> Môn **Embedded System Design** – GVHD: Huỳnh Hoàng Hà – Trường ĐH Sư phạm Kỹ thuật TP.HCM (HCMUTE)
+> Trạng thái: **Tuần 6 – System Integration** · Firmware **v2.2.0** · Dashboard **v4** · **Vercel API + Postgres (Neon) + HiveMQ** · Phần cứng **Rev2**
 
-## 📁 CẤU TRÚC THƯ MỤC REPOSITORY (GITHUB)
+## 📁 Cấu trúc repository
 
 ```text
 smart-aquarium-ai/
-├── index.html                  # Giao diện Website Dashboard (Tailwind CSS, MQTT.js, Chart.js)
-├── vercel.json                 # File cấu hình triển khai tự động trên Vercel
-├── README.md                   # Hướng dẫn chi tiết dự án
-└── firmware/
-    └── smart_aquarium_esp32s3.ino  # Mã nguồn C++ nạp cho vi điều khiển ESP32-S3
+├── README.md                         # README tổng (file này)
+├── index.html                        # Web Dashboard v4 (HiveMQ realtime + Vercel API + Chart.js)
+├── api/                              # Vercel Functions: ingest, history, stats, feeds, events, export, config, health, cron
+├── lib/                              # Kết nối Postgres (pg), tiện ích HTTP, schema
+├── db/schema.sql                     # Cấu trúc bảng (API tự tạo, không cần chạy tay)
+├── package.json                      # Dependency: pg
+├── vercel.json                       # Cron dọn dữ liệu + header
+├── .env.example                      # Danh sách Environment Variables
+├── docs/
+│   ├── README.md
+│   ├── 01_TONG_KET_KET_QUA_TUAN.md    # Tổng kết kết quả từng tuần (W1 → W6)
+│   ├── 02_DAC_TA_HE_THONG.md          # Đặc tả: yêu cầu, FR/NFR, kiến trúc, MQTT, state machine
+│   ├── 03_LO_TRINH_TIEN_DO_PHAN_CONG.md # Lộ trình 9 tuần, tiến độ, phân công, quản lý cá nhân
+│   ├── 04_PHAN_CUNG_REV2_RTC.md       # Làm lại toàn bộ mạch + tích hợp RTC DS3231
+│   └── 05_WEB_DATABASE.md             # Triển khai Vercel + Postgres + HiveMQ (public/Cloud)
+├── firmware/
+│   ├── README.md
+│   └── smart_aquarium_esp32s3/
+│       └── smart_aquarium_esp32s3.ino # Firmware v2.2.0
+├── hardware/
+│   ├── README.md
+│   └── danh_sach_mua_sam_v1.1.xlsx     # BOM & dự toán (cập nhật Rev2)
+├── report/
+│   ├── README.md
+│   └── Report_Chuong1_2.docx           # Báo cáo: Chương 1 Tổng quan, Chương 2 Cơ sở lý thuyết
+└── weekly/
+    └── W06/README.md                  # Bản nộp tuần 6
 ```
 
----
+## ⚙️ Tính năng chính (v2.2.0)
 
-## ⚡ HƯỚNG DẪN ĐẨY CODE LÊN GITHUB & TRUYỀN LÊN VERCEL BẰNG VS CODE
+| Nhóm | Tính năng |
+|---|---|
+| Nhiệt độ | DS18B20 đọc bất đồng bộ 1 s · hysteresis AUTO · MANUAL tự hết hạn 30 phút · nghỉ tối thiểu 60 s · quạt chạy trễ 60 s |
+| Cho ăn | Servo MG90S · nút FEED / Web / **lịch tối đa 4 mốc theo RTC** · tạm dừng bơm · chống cho ăn lặp & quá tay |
+| Thời gian | **DS3231** giữ giờ bằng pin · NTP → RTC · đặt giờ từ trình duyệt · ngắt SQW 1 Hz |
+| An toàn | Lỗi cảm biến → tắt sò · ≥30°C ép bật · ≤22°C ép tắt · bơm tắt → khóa sò · còi cảnh báo |
+| IoT | MQTT HiveMQ public (1883) hoặc **HiveMQ Cloud (TLS 8883 + user/pass)** · telemetry 2 s · event · LWT online/offline · **ACK cho mỗi lệnh web** · lưu cấu hình NVS |
+| Database | **Vercel Functions + Postgres (Neon)**: ESP32 gửi theo lô lên `/api/ingest` (task FreeRTOS riêng) · web vẽ lịch sử 1h–7 ngày, KPI, cho ăn theo ngày, nhật ký, xuất CSV · cron dọn dữ liệu cũ |
 
-### Bước 1: Chuẩn bị VS Code & Git
-1. Mở **Visual Studio Code (VS Code)**.
-2. Tạo một thư mục mới tên `smart-aquarium-ai` trên máy tính.
-3. Tạo 2 file cốt lõi trong thư mục này:
-   * `index.html` (Nội dung mã nguồn Website Dashboard bên dưới)
-   * `vercel.json` (Nội dung file cấu hình Vercel)
-4. Tạo thư mục `firmware/` và lưu file `smart_aquarium_esp32s3.ino` vào đó.
+## 📌 Sơ đồ chân Rev2 (tóm tắt)
 
-### Bước 2: Đẩy Repository lên GitHub qua VS Code Terminal
-Mở Terminal trong VS Code (`Ctrl + ~` hoặc `Cmd + ~`) và chạy lần lượt các lệnh:
+| Linh kiện | GPIO | Ghi chú |
+|---|---|---|
+| DS18B20 | 4 | Trở kéo 4.7k lên **3V3** |
+| OLED SH1106 + DS3231 (I2C) | SDA 8 / SCL 9 | Cấp **3V3**, 0x3C / 0x68 |
+| DS3231 SQW | 7 | Ngắt 1 Hz |
+| Relay CH1 – Sò Peltier | 5 | Active-LOW, tháo jumper JD-VCC |
+| Relay CH2 – Bơm | 6 | Active-LOW |
+| Quạt (IRLZ44N) | 15 | Chạy trễ 60 s |
+| Servo MG90S | 13 | Tụ 1000 µF |
+| Còi (qua S8050) | 14 | |
+| Nút BOOT / FEED | 0 / 16 | Giữ BOOT 2 s = Self-Test |
 
-```bash
-git init
-git add .
-git commit -m "Initial commit - Smart Aquarium IoT System"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/smart-aquarium-ai.git
-git push -u origin main
-```
-*(Thay `YOUR_USERNAME` bằng tên tài khoản GitHub của bạn).*
+Chi tiết đấu nối, nguồn 12V-10A, quy trình bring-up: **[docs/04_PHAN_CUNG_REV2_RTC.md](docs/04_PHAN_CUNG_REV2_RTC.md)**
 
-### Bước 3: Triển khai Website tự động lên Vercel
-1. Truy cập [https://vercel.com](https://vercel.com) và đăng nhập bằng tài khoản GitHub.
-2. Nhấn nút **"Add New..."** ➔ chọn **"Project"**.
-3. Chọn Repository **`smart-aquarium-ai`** vừa đẩy lên GitHub.
-4. Bấm **"Deploy"**. Sau 10–15 giây, Vercel sẽ cấp cho bạn một đường link Web HTTPS công khai dạng:  
-   `https://smart-aquarium-ai.vercel.app`
+## 🚀 Bắt đầu nhanh
 
----
+1. **Firmware:** xem [firmware/README.md](firmware/README.md) – cài thư viện, sửa Wi-Fi & `TOPIC_BASE`, nạp bằng Arduino IDE.
+2. **Vercel + Database + HiveMQ:** push GitHub → Vercel **Storage → Neon** → nhập Environment Variables (xem `.env.example`) → Redeploy. Chi tiết: [docs/05_WEB_DATABASE.md](docs/05_WEB_DATABASE.md).
+3. **Kiểm tra:** mở `https://<app>.vercel.app/api/health`.
+4. **Phần cứng:** lắp theo thứ tự B1 → B10 trong `docs/04`.
 
-## 🔌 HƯỚNG DẪN NẠP CODE CHO ESP32-S3 BẰNG ARDUINO IDE
+## 👥 Nhóm
 
-1. Mở phần mềm **Arduino IDE**.
-2. Vào **File** ➔ **Preferences**, thêm URL sau vào mục *Additional Boards Manager URLs*:
-   `https://espressif.github.io/arduino-esp32/package_esp32_index.json`
-3. Vào **Tools** ➔ **Board** ➔ **Boards Manager**, tìm kiếm `esp32` và nhấn **Install**.
-4. Cài đặt các thư viện cần thiết (**Tools** ➔ **Manage Libraries...**):
-   * `PubSubClient` (bởi Nick O'Leary)
-   * `ArduinoJson` (bởi Benoit Blanchon)
-   * `OneWire` & `DallasTemperature`
-   * `ESP32Servo`
-   * `Adafruit SSD1306` & `Adafruit GFX Library`
-5. Chọn Board: **Tools** ➔ **Board** ➔ **ESP32 Arduino** ➔ **ESP32S3 Dev Module**.
-6. Sửa lại **SSID** và **Password** Wi-Fi nhà bạn trong file `smart_aquarium_esp32s3.ino`.
-7. Cắm cáp USB nối ESP32-S3 với máy tính, chọn đúng cổng **COM/Port** và nhấn nút **Upload (➔)**.
-
----
-
-## 📌 SƠ ĐỒ ĐẤU NỐI CHÂN PIN ESP32-S3
-
-| Tên linh kiện | Chân linh kiện | Chân cắm trên ESP32-S3 | Ghi chú kỹ thuật |
-| :--- | :--- | :--- | :--- |
-| **DS18B20** | Data | **GPIO 4** | Cần điện trở kéo 4.7kΩ lên nguồn 5V |
-| **Relay 1 (Chiller)** | IN1 | **GPIO 19** | Điều khiển Sò lạnh Peltier + Quạt 12V |
-| **Relay 2 (Bơm lọc)** | IN2 | **GPIO 18** | Điều khiển Máy Bơm Lọc Nước 12V |
-| **Servo MG90S** | PWM Signal | **GPIO 13** | Hộc xoay cho cá ăn tự động |
-| **Còi Bíp Active** | VCC (+) | **GPIO 12** | Phát còi cảnh báo sự cố |
-| **OLED 1.3" I2C** | SDA / SCL | **GPIO 8 / GPIO 9** | Màn hình hiển thị đồ họa 128x64 |
-| **Nút BOOT** | Button | **GPIO 0** | Kích hoạt chu trình Self-Test thủ công |
-
----
-
-## 🛠️ GIẢI QUYẾT LỖI PHẦN CỨNG THƯỜNG GẶP
-
-1. **Lỗi `BROWNOUT_RST` (Sụt áp làm ESP32-S3 reset liên tục):**
-   * **Nguyên nhân:** Dùng duy nhất nguồn cáp USB máy tính để nuôi cả Servo và Relay.
-   * **Khắc phục:** Bắt buộc cấp nguồn **12V - 5A** ngoài qua mạch hạ áp **LM2596/XL4015** vặn biến trở về đúng **5.0V** rồi cắm vào chân `VIN` của ESP32-S3.
-2. **Lỗi `invalid conversion from char to const char*`:**
-   * **Khắc phục:** Đã được sửa triệt để trong bản code `smart_aquarium_esp32s3.ino` bằng cách khai báo mảng bộ đệm `char buffer[256];`.
-
----
-*Đồ án Phát triển Ứng dụng IoT - Trường Đại học Sư phạm Kỹ thuật TP.HCM (HCMUTE)*
+Xem bảng thành viên & phân công: [docs/03_LO_TRINH_TIEN_DO_PHAN_CONG.md](docs/03_LO_TRINH_TIEN_DO_PHAN_CONG.md)
