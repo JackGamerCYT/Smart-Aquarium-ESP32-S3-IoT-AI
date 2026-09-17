@@ -157,7 +157,7 @@ flowchart TB
 | 1-Wire | DS18B20 | GPIO4, 11-bit (375 ms/lần chuyển đổi) |
 | I2C | OLED SH1106 (0x3C), DS3231 (0x68), AT24C32 (0x57) | GPIO8 SDA / GPIO9 SCL, 400 kHz, 3V3 |
 | GPIO ngắt | DS3231 SQW | GPIO7, FALLING, 1 Hz |
-| GPIO ra | Relay CH1/CH2 (Active-LOW), MOSFET quạt, còi | GPIO5, GPIO6, GPIO15, GPIO14 |
+| GPIO ra | Relay CH1/CH2 (Active-LOW), MOSFET quạt, còi | GPIO19, GPIO18, GPIO15 (tùy chọn), GPIO12 |
 | PWM | Servo | GPIO13, 50 Hz, 500–2400 µs |
 | GPIO vào | Nút BOOT / FEED | GPIO0 / GPIO16, INPUT_PULLUP |
 | Wi-Fi/MQTT | HiveMQ | `broker.hivemq.com:1883` (thiết bị), `wss://…:8884/mqtt` (web) |

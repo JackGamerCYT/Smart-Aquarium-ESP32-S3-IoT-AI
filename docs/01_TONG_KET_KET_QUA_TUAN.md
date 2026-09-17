@@ -80,7 +80,7 @@
 | Hạng mục | Người phụ trách | Trạng thái | Minh chứng |
 |---|---|---|---|
 | Rà soát toàn bộ mạch Rev1, lập danh sách 13 lỗi/cải tiến | Rel | ✅ | `docs/04` §1 |
-| Thiết kế lại mạch Rev2: pinout mới, nguồn 12V-10A + cầu chì, JD-VCC relay, MOSFET quạt, transistor còi, tụ servo | Rel | ✅ thiết kế · 🔄 hàn PCB | `docs/04` §3–6 |
+| Mạch Rev2: giữ nguyên chân cũ (relay 19/18, còi 12), thêm chân RTC/quạt/nút; nguồn 12V-10A + cầu chì, JD-VCC relay, MOSFET quạt, transistor còi, tụ servo | Rel | ✅ thiết kế · 🔄 hàn PCB | `docs/04` §3–6 |
 | **Tích hợp RTC DS3231** (I2C chung OLED + SQW GPIO7) | Rel | ✅ thiết kế + FW · 🔄 test phần cứng | `docs/04` §4.5, §8 |
 | Firmware v2.0.0: non-blocking, RTC/NTP, lịch cho ăn, an toàn, NVS, LWT | Rel + TV2 | ✅ code · 🔄 nạp & chạy thật | `firmware/…ino` |
 | Web v2: sửa biểu đồ, hiển thị giờ RTC, lịch, ngưỡng, cảnh báo, đồng bộ giờ | TV3 | ✅ code · 🔄 deploy | `index.html` |

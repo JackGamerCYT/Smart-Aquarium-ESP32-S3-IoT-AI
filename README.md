@@ -56,11 +56,11 @@ smart-aquarium-ai/
 | DS18B20 | 4 | Trở kéo 4.7k lên **3V3** |
 | OLED SH1106 + DS3231 (I2C) | SDA 8 / SCL 9 | Cấp **3V3**, 0x3C / 0x68 |
 | DS3231 SQW | 7 | Ngắt 1 Hz |
-| Relay CH1 – Sò Peltier | 5 | Active-LOW, tháo jumper JD-VCC |
-| Relay CH2 – Bơm | 6 | Active-LOW |
+| Relay CH1 – Sò Peltier | 19 | Active-LOW (giữ như mạch cũ) |
+| Relay CH2 – Bơm | 18 | Active-LOW (giữ như mạch cũ) |
 | Quạt (IRLZ44N) | 15 | Chạy trễ 60 s |
 | Servo MG90S | 13 | Tụ 1000 µF |
-| Còi (qua S8050) | 14 | |
+| Còi | 12 | như mạch cũ |
 | Nút BOOT / FEED | 0 / 16 | Giữ BOOT 2 s = Self-Test |
 
 Chi tiết đấu nối, nguồn 12V-10A, quy trình bring-up: **[docs/04_PHAN_CUNG_REV2_RTC.md](docs/04_PHAN_CUNG_REV2_RTC.md)**

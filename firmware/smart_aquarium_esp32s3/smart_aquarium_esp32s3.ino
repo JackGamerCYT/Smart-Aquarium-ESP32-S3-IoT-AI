@@ -6,7 +6,7 @@
  *  Thay đổi chính so với v1:
  *   - Thêm RTC DS3231 (I2C chung bus với OLED) + đồng bộ NTP -> lịch cho ăn
  *     vẫn chạy đúng giờ khi MẤT Wi-Fi / mất điện (pin CR2032 giữ giờ).
- *   - Dời chân Relay Chiller khỏi GPIO19 (GPIO19/20 = USB D-/D+ của ESP32-S3).
+ *   - GIỮ NGUYÊN chân Relay/Còi như mạch cũ (GPIO19, GPIO18, GPIO12) vì đã chạy ổn.
  *   - Toàn bộ vòng lặp NON-BLOCKING: DS18B20 đọc bất đồng bộ, servo & còi
  *     chạy bằng state machine -> MQTT không bị rớt khi đang cho ăn.
  *   - Sửa lỗi manualOverrideChiller không bao giờ tự trả về AUTO.
@@ -63,23 +63,23 @@
 #endif
 
 // ============================================================================
-// 1. SƠ ĐỒ CHÂN – REV2 (xem docs/04_PHAN_CUNG_REV2_RTC.md)
-//    Tránh: GPIO19/20 (USB), GPIO26-32 (Flash), GPIO33-37 (PSRAM Octal),
-//           GPIO3/45/46 (strapping), GPIO43/44 (UART0 nạp code).
+// 1. SƠ ĐỒ CHÂN – GIỮ NGUYÊN CHÂN MẠCH CŨ + thêm chân mới cho RTC/quạt/nút
+//    Lưu ý: GPIO19 trùng USB D- → nạp code qua cổng "UART/COM", không dùng cổng "USB" (OTG).
+//    Chân mới (7, 15, 16) không đụng chân cũ; không nối thì firmware vẫn chạy.
 // ============================================================================
 #define PIN_DS18B20        4    // 1-Wire, trở kéo 4.7k lên 3V3 (KHÔNG lên 5V)
 #define PIN_I2C_SDA        8    // OLED 0x3C + DS3231 0x68 (+ EEPROM 0x57)
 #define PIN_I2C_SCL        9
-#define PIN_RTC_SQW        7    // DS3231 SQW/INT – xung 1 Hz (ngắt)
-#define PIN_RELAY_CHILLER  5    // Relay CH1 -> Sò Peltier TEC1-12706 (12V)
-#define PIN_RELAY_PUMP     6    // Relay CH2 -> Máy bơm 12V
-#define PIN_FAN_MOSFET     15   // IRLZ44N -> Quạt tản nhiệt 12V
+#define PIN_RTC_SQW        7    // (MỚI) DS3231 SQW – xung 1 Hz; không nối vẫn chạy
+#define PIN_RELAY_CHILLER  19   // IN1: Relay 1 -> Sò Peltier + quạt (như cũ)
+#define PIN_RELAY_PUMP     18   // IN2: Relay 2 -> Máy bơm 12V (như cũ)
+#define PIN_FAN_MOSFET     15   // (tùy chọn, MỚI) quạt riêng qua IRLZ44N – quạt đang chung relay thì bỏ trống
 #define PIN_SERVO_FEED     13   // MG90S PWM 50 Hz
-#define PIN_BUZZER         14   // qua transistor S8050 / 2N2222
+#define PIN_BUZZER         12   // Còi active (như cũ)
 #define PIN_BTN_TEST       0    // Nút BOOT: giữ 2 s -> Self-Test
-#define PIN_BTN_FEED       16   // Nút cho ăn thủ công (kéo xuống GND)
+#define PIN_BTN_FEED       16   // (MỚI, tùy chọn) nút cho ăn → GND
 
-// Relay module Active-LOW (đã tháo jumper JD-VCC: VCC=3V3, JD-VCC=5V)
+// Relay module Active-LOW như mạch cũ (LOW = đóng)
 #define RELAY_ON   LOW
 #define RELAY_OFF  HIGH
 

@@ -13,11 +13,11 @@ Mức độ: 🔴 bắt buộc sửa (có thể hỏng linh kiện / sai chức 
 | # | Mức | Vấn đề ở Rev1 | Hậu quả | Cách làm lại ở Rev2 |
 |---|---|---|---|---|
 | H1 | 🔴 | Trở kéo DS18B20 **lên 5V** (README + bảng nối chân) | Chân GPIO ESP32-S3 **không chịu 5V** → hỏng dần GPIO4 | Cấp DS18B20 bằng **3V3**, trở 4.7 kΩ nối DQ ↔ **3V3** |
-| H2 | 🔴 | Relay Chiller ở **GPIO19** | GPIO19/20 là **USB D−/D+** của ESP32-S3 → mất cổng USB native, relay có thể chớp khi cắm USB | Dời sang **GPIO5**; bơm sang **GPIO6** |
+| H2 | 🟢 | Relay Chiller ở **GPIO19** (trùng USB D−) | Mạch cũ đã chạy ổn | **Giữ nguyên GPIO19/GPIO18**; chỉ lưu ý nạp code qua cổng **UART/COM** của DevKit |
 | H3 | 🔴 | Nguồn **12V–5A** cho cả hệ | TEC1-12706 tự ăn ~5–6 A @12V + quạt + bơm + buck 5V ≈ **7 A** → adapter quá tải, sụt áp, nóng | Đổi nguồn **12V – 10A** (120 W) + cầu chì 10 A đầu vào |
-| H4 | 🔴 | Relay module 5V kích bằng GPIO 3.3V (VCC relay = 5V) | Mức HIGH 3.3V **không tắt hẳn** LED opto (5V−3.3V vẫn đủ dòng) → **nguyên nhân thật** của lỗi "IN1 sáng đỏ liên tục" | **Tháo jumper JD-VCC**: `VCC = 3V3` (phía opto), `JD-VCC = 5V` (cuộn relay), GND chung. Hoặc mua relay có jumper chọn mức kích 3.3V |
+| H4 | 🟢 | Relay module 5V kích bằng GPIO 3.3V | Relay đang chạy ổn → **giữ nguyên cách nối cũ** | Chỉ khi đèn IN không tắt hẳn: tháo jumper JD-VCC (`VCC=3V3`, `JD-VCC=5V`) |
 | H5 | 🔴 | OLED & DS3231 cấp 5V | Module có sẵn trở kéo I2C lên VCC → SDA/SCL bị kéo lên **5V** vào ESP32 | Cấp **OLED + DS3231 = 3V3** (cả hai chạy tốt 3.3V) |
-| H6 | 🟠 | Còi 5V nối thẳng GPIO12 | GPIO chỉ 3.3V/≤40 mA → còi yếu, GPIO quá tải | Kích qua **transistor NPN S8050/2N2222** (GPIO14 → 1 kΩ → B) |
+| H6 | 🟢 | Còi nối thẳng GPIO12 | Còi hơi nhỏ | **Giữ GPIO12**; muốn to hơn thì thêm transistor S8050 (tùy chọn) |
 | H7 | 🟠 | Quạt chung relay với sò | Tắt sò là tắt quạt ngay → nhiệt mặt nóng dội ngược sang mặt lạnh | Quạt tách riêng qua **MOSFET IRLZ44N** (đã có trong BOM) + chạy trễ 60 s |
 | H8 | 🟠 | Servo không có tụ đệm | Dòng khởi động servo kéo tụt 5V → `BROWNOUT_RST` | Tụ **1000 µF/16V + 100 nF** sát jack servo |
 | H9 | 🟠 | Không có cầu chì, dây lực đi trên PCB đục lỗ | Đường đồng lỗ chịu dòng kém → cháy mạch khi dòng 6 A | Dây Peltier **≥ 1 mm² (18 AWG)** đi thẳng qua **domino KF301**, không đi trên đường lỗ |
@@ -60,15 +60,15 @@ flowchart LR
 | I2C SDA (OLED + RTC) | GPIO8 | **GPIO8** | Bus chung, OLED 0x3C, DS3231 0x68, EEPROM AT24C32 0x57 |
 | I2C SCL | GPIO9 | **GPIO9** | Tốc độ 400 kHz, dây ≤ 20 cm |
 | **DS3231 SQW/INT** | – | **GPIO7** | INPUT_PULLUP, xung 1 Hz → ngắt FALLING |
-| Relay CH1 – Sò Peltier | GPIO19 ❌ | **GPIO5** | Active-LOW |
-| Relay CH2 – Bơm | GPIO18 | **GPIO6** | Active-LOW |
+| Relay CH1 – Sò Peltier | GPIO19 | **GPIO19 (giữ nguyên)** | Active-LOW |
+| Relay CH2 – Bơm | GPIO18 | **GPIO18 (giữ nguyên)** | Active-LOW |
 | **Quạt tản nhiệt** | chung relay | **GPIO15** | Gate IRLZ44N qua 100 Ω, kéo xuống 10 kΩ |
 | Servo MG90S | GPIO13 | **GPIO13** | PWM 50 Hz, 500–2400 µs |
-| Còi | GPIO12 | **GPIO14** | Qua S8050 (1 kΩ vào base) |
+| Còi | GPIO12 | **GPIO12 (giữ nguyên)** | Nối thẳng như cũ (S8050 tùy chọn) |
 | Nút Self-Test | GPIO0 (BOOT) | **GPIO0** | Giữ 2 s |
 | **Nút FEED** | – | **GPIO16** | Nút → GND, INPUT_PULLUP |
 
-**Các chân KHÔNG được dùng trên ESP32-S3 N8R8/N16R8:** GPIO19/20 (USB), GPIO26–32 (SPI Flash), GPIO33–37 (PSRAM Octal), GPIO3/45/46 (strapping), GPIO43/44 (UART0 – nạp code/Serial).
+**Chân nên tránh khi thêm mới trên ESP32-S3 N8R8/N16R8:** GPIO20 (USB; GPIO19 đang dùng cho relay – nạp code qua cổng UART), GPIO26–32 (SPI Flash), GPIO33–37 (PSRAM Octal), GPIO3/45/46 (strapping), GPIO43/44 (UART0 – nạp code/Serial).
 
 ---
 
@@ -89,14 +89,16 @@ Adapter (−) ──────────────────────
 3. ⚠️ Không cắm **cáp USB và 5V ngoài cùng lúc** nếu chưa có diode chống ngược. Khi nạp code: rút jack 5V ngoài **hoặc** thêm diode Schottky 1N5819/SS34 nối tiếp từ 5V BUS → chân 5V của DevKit.
 4. LM2596 thực tế chỉ nên tải liên tục ~2 A. Tải 5V của hệ ≈ 1.3 A đỉnh → vẫn đạt. Nếu nóng: thay **XL4015 (5 A)**.
 
-### 4.2 Relay 2 kênh (sò + bơm) – sửa lỗi IN1 sáng đỏ
+### 4.2 Relay 2 kênh (sò + bơm)
+
+> Relay đang chạy ổn thì **giữ nguyên dây như mạch cũ** (IN1→GPIO19, IN2→GPIO18, VCC/GND như cũ). Cách tách JD-VCC dưới đây chỉ dùng khi đèn IN không tắt hẳn.
 
 ```text
 Relay module:  [JD-VCC] [VCC]  ← THÁO JUMPER nối 2 chân này
                JD-VCC ─── 5V BUS    (nuôi cuộn relay)
                VCC    ─── 3V3       (nuôi LED opto, cùng mức với GPIO)
                GND    ─── GND chung
-               IN1    ─── GPIO5     IN2 ─── GPIO6
+               IN1    ─── GPIO19    IN2 ─── GPIO18
 
 Tiếp điểm CH1:  COM ── 12V BUS     NO ── (+) Sò TEC1-12706     (−) Sò ── GND 12V
 Tiếp điểm CH2:  COM ── 12V BUS     NO ── (+) Bơm 12V           (−) Bơm ── GND 12V
@@ -150,7 +152,7 @@ Tụ 1000µF/16V + 100nF song song ngay tại header servo
 ### 4.7 Còi active 5V + nút nhấn
 
 ```text
-5V ── Còi(+)   Còi(−) ── C (S8050)   E ── GND   B ──[1kΩ]── GPIO14
+5V ── Còi(+)   Còi(−) ── C (S8050)   E ── GND   B ──[1kΩ]── GPIO12
 GPIO16 ── Nút FEED ── GND           GPIO0 = nút BOOT có sẵn trên DevKit
 ```
 
@@ -201,7 +203,7 @@ GPIO16 ── Nút FEED ── GND           GPIO0 = nút BOOT có sẵn trên D
 | B3 | Gắn ESP32 (chưa ngoại vi), cấp 5V ngoài | Đo chân 3V3 | 3.3 V, board boot, Serial chạy |
 | B4 | Nối I2C: OLED + DS3231 | Chạy I2C scanner | Thấy **0x3C, 0x57, 0x68** |
 | B5 | Nối DS18B20 | Serial đọc nhiệt | Khác −127/85, sai lệch ≤0.5°C so với nhiệt kế |
-| B6 | Nối relay (tháo JD-VCC), **chưa nối tải 12V** | Toggle GPIO5/6 | LED + tiếng "tách" đúng, OFF là **tắt hẳn** |
+| B6 | Nối relay (tháo JD-VCC), **chưa nối tải 12V** | Toggle GPIO19/18 | LED + tiếng "tách" đúng, OFF là **tắt hẳn** |
 | B7 | Nối quạt qua MOSFET | GPIO15 HIGH/LOW | Quạt chạy/dừng, MOSFET không nóng |
 | B8 | Nối servo + tụ | Chạy sweep 0→110→0 | Không reset (không `BROWNOUT_RST`) |
 | B9 | Nối bơm + sò (tải thật) | Ampe kìm/đồng hồ trên 12V | Tổng dòng ≤ 8 A, adapter không sụt < 11.5 V |
