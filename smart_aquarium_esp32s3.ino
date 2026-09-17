@@ -88,7 +88,7 @@
 // ============================================================================
 // 2. CẤU HÌNH
 // ============================================================================
-const char* FW_VERSION   = "2.2.1";
+const char* FW_VERSION   = "2.2.2";
 const char* WIFI_SSID    = "HO TRO SINH VIEN"; // Wi-Fi 2.4 GHz
 const char* WIFI_PASS    = "12345678@";
 // ---- MQTT: chọn 1 trong 2 ----
@@ -130,7 +130,7 @@ const unsigned long CHILLER_MIN_OFF_MS   = 60000UL;   // chống đóng/ngắt r
 const unsigned long FAN_POSTRUN_MS       = 60000UL;   // quạt chạy thêm sau khi tắt sò
 const unsigned long MANUAL_TIMEOUT_MS    = 30UL * 60 * 1000; // MANUAL tự về AUTO
 const unsigned long PUMP_RESUME_DELAY_MS = 5000;      // bơm chạy lại sau khi hộc đóng
-const unsigned long WIFI_RETRY_MS        = 30000;
+const unsigned long WIFI_RETRY_MS        = 60000;   // Wi-Fi trường vào chậm → đừng ngắt quá sớm
 const unsigned long MQTT_RETRY_MS        = 5000;
 const unsigned long RTC_WRITE_PERIOD_MS  = 6UL * 3600 * 1000;  // ghi giờ NTP -> RTC
 const unsigned long RTC_RESEED_PERIOD_MS = 10UL * 60 * 1000;   // offline: RTC -> hệ thống
@@ -812,8 +812,10 @@ void handleConnectivity(unsigned long now) {
     if (wifiWasUp) { wifiWasUp = false; Serial.println("[WIFI] Mat ket noi Wi-Fi"); }
     if (now - lastWifiTryMs >= WIFI_RETRY_MS) {
       lastWifiTryMs = now;
-      Serial.printf("[WIFI] Dang ket noi lai \"%s\" (status=%d)\n", WIFI_SSID, (int)WiFi.status());
-      WiFi.disconnect(); WiFi.begin(WIFI_SSID, WIFI_PASS);
+      wl_status_t ws = WiFi.status();
+      // 1=NO_SSID (sai tên/không phải 2.4GHz) · 4=CONNECT_FAILED (sai mật khẩu) · 6=DISCONNECTED
+      Serial.printf("[WIFI] Chua ket noi \"%s\" (status=%d) -> thu lai\n", WIFI_SSID, (int)ws);
+      WiFi.disconnect(); delay(100); WiFi.begin(WIFI_SSID, WIFI_PASS);
     }
     return;
   }
@@ -887,7 +889,7 @@ void setup() {
     const char* why = rr == ESP_RST_POWERON ? "Bat nguon" : rr == ESP_RST_SW ? "Reset mem" :
                       rr == ESP_RST_PANIC ? "CRASH (loi code/tran stack)" : rr == ESP_RST_BROWNOUT ? "BROWNOUT – SUT AP NGUON!" :
                       rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT || rr == ESP_RST_WDT ? "WATCHDOG (treo)" :
-                      rr == ESP_RST_EXT ? "Nut RESET" : rr == ESP_RST_USB ? "USB" : "Khac";
+                      rr == ESP_RST_EXT ? "Nut RESET" : "Khac";
     Serial.printf("[SYS] Ly do khoi dong: %s (%d) | heap trong: %u byte\n", why, (int)rr, (unsigned)ESP.getFreeHeap());
   }
 
@@ -919,9 +921,10 @@ void setup() {
   feedServo.attach(PIN_SERVO_FEED, 500, 2400);   // đưa hộc về 0°
   feedServo.write(0); delay(300); feedServo.detach();
 
-  uint64_t mac = ESP.getEfuseMac();
-  char id[24]; snprintf(id, sizeof(id), "aquarium-%06X", (uint32_t)(mac >> 24) & 0xFFFFFF);
+  uint64_t mac = ESP.getEfuseMac();                 // 48-bit MAC → client ID duy nhất (trùng ID = broker đá nhau → offline)
+  char id[32]; snprintf(id, sizeof(id), "aquarium-%04X%08X", (uint16_t)(mac >> 32), (uint32_t)mac);
   deviceId = id;
+  Serial.printf("[SYS] MQTT client ID: %s\n", id);
   topicTelemetry = String(TOPIC_BASE) + "/telemetry";
   topicCommand   = String(TOPIC_BASE) + "/command";
   topicStatus    = String(TOPIC_BASE) + "/status";
@@ -990,4 +993,13 @@ void loop() {
   }
 
   if (selfTestRequested) { selfTestRequested = false; runSelfTest(); }
+
+  static unsigned long lastBeat = 0;               // nhịp tim Serial: nhìn là biết đang kẹt ở đâu
+  if (now - lastBeat >= 10000) {
+    lastBeat = now;
+    Serial.printf("[SYS] uptime %lus | WiFi %s | MQTT %s (state=%d) | T=%s | heap %u\n",
+                  now / 1000, WiFi.status() == WL_CONNECTED ? "OK" : "CHUA",
+                  mqtt.connected() ? "OK" : "CHUA", mqtt.state(),
+                  sensorFault ? "ERR" : String(currentTemp, 1).c_str(), (unsigned)ESP.getFreeHeap());
+  }
 }

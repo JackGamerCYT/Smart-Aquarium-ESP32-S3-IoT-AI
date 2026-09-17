@@ -362,7 +362,11 @@ function term(tag, msg, color = 'text-emerald-400') {
 
 let devTimer;
 function handleMessage(topic, text) {
-  if (topic === T.status) { term('STATUS', 'ESP32: ' + text, text === 'online' ? 'text-emerald-300' : 'text-rose-400'); return badge('badge-dev', text === 'online', 'Thiết bị: ' + text); }
+  if (topic === T.status) {
+    term('STATUS', 'ESP32: ' + text + (text === 'offline' ? ' (tin LWT/retained – chỉ đúng nếu không còn dữ liệu DATA)' : ''), text === 'online' ? 'text-emerald-300' : 'text-rose-400');
+    if (text === 'offline' && Date.now() - lastTelemetryAt < 6000) return;   // vẫn đang nhận dữ liệu → bỏ qua tin offline cũ
+    return badge('badge-dev', text === 'online', 'Thiết bị: ' + text);
+  }
   let d; try { d = JSON.parse(text); } catch { return; }
 
   if (topic === T.ack) {
