@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Smart Aquarium – Dashboard v4</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/mqtt@5/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <style>
+    .spinner{width:14px;height:14px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;animation:spin .7s linear infinite;vertical-align:-2px}
+    @keyframes spin{to{transform:rotate(360deg)}}
+    .tab-on{background:#0891b2;color:#fff}
+    button:disabled{opacity:.6;cursor:wait}
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-4 md:p-8 font-sans">
+<div class="max-w-7xl mx-auto space-y-6">
+
+  <!-- ===================== HEADER ===================== -->
+  <header class="flex flex-col md:flex-row justify-between items-center bg-slate-800 p-5 rounded-2xl border border-slate-700 gap-4">
+    <div>
+      <h1 class="text-2xl md:text-3xl font-bold text-cyan-400">🐠 Smart Aquarium IoT</h1>
+      <p class="text-slate-400 text-sm mt-1">ESP32-S3 · HiveMQ realtime · Vercel API + Postgres · FW <span id="fw">--</span></p>
+    </div>
+    <div class="flex gap-2 flex-wrap justify-center">
+      <span id="badge-mqtt" class="px-3 py-1.5 rounded-full text-xs font-bold bg-slate-700">MQTT: …</span>
+      <span id="badge-dev"  class="px-3 py-1.5 rounded-full text-xs font-bold bg-slate-700">Thiết bị: ?</span>
+      <span id="badge-db"   class="px-3 py-1.5 rounded-full text-xs font-bold bg-slate-700">Database: …</span>
+    </div>
+  </header>
+
+  <div id="alarm-bar" class="hidden bg-red-500/20 border border-red-500/40 text-red-200 p-4 rounded-xl flex justify-between items-center">
+    <span id="alarm-text" class="font-bold">⚠️</span>
+    <button data-cmd='{"device":"alarm","action":"MUTE"}' class="cmd px-3 py-1 bg-red-600 rounded-lg text-xs font-bold">Tắt còi</button>
+  </div>
+
+  <!-- ===================== KPI ===================== -->
+  <section class="grid grid-cols-2 lg:grid-cols-5 gap-4">
+    <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700">
+      <div class="text-slate-400 text-xs">Nhiệt độ hiện tại</div>
+      <div class="mt-1"><span id="temp" class="text-4xl font-black text-cyan-300">--.-</span><span class="text-slate-400 font-bold"> °C</span></div>
+      <div class="text-xs text-slate-500 mt-1">Ngưỡng: <span id="sp-off-v">--</span> – <span id="sp-on-v">--</span>°C</div>
+    </div>
+    <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700">
+      <div class="text-slate-400 text-xs">TB / Min / Max <span class="range-lbl">24h</span></div>
+      <div class="mt-1 text-2xl font-bold"><span id="k-avg">--</span><span class="text-slate-500 text-base"> °C</span></div>
+      <div class="text-xs text-slate-400 mt-1">min <b id="k-min">--</b> · max <b id="k-max">--</b></div>
+    </div>
+    <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700">
+      <div class="text-slate-400 text-xs">Sò lạnh hoạt động <span class="range-lbl">24h</span></div>
+      <div class="mt-1 text-2xl font-bold text-sky-300"><span id="k-duty">--</span><span class="text-slate-500 text-base"> %</span></div>
+      <div class="text-xs text-slate-400 mt-1"><span id="k-samples">--</span> mẫu trong DB</div>
+    </div>
+    <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700">
+      <div class="text-slate-400 text-xs">Cho ăn hôm nay / tổng</div>
+      <div class="mt-1 text-2xl font-bold text-amber-400"><span id="feed-today">0</span> / <span id="feed-total">0</span></div>
+      <div class="text-xs text-slate-400 mt-1">Kế tiếp: <b id="next-feed">--:--</b></div>
+    </div>
+    <div class="bg-slate-800 p-4 rounded-2xl border border-slate-700 col-span-2 lg:col-span-1">
+      <div class="text-slate-400 text-xs">Giờ thiết bị (RTC)</div>
+      <div id="dev-time" class="mt-1 text-lg font-mono font-bold text-emerald-300">--</div>
+      <div class="text-xs text-slate-400 mt-1">Nguồn <b id="time-src">--</b> · RSSI <b id="rssi">--</b> · DB <b id="db-cnt">--</b></div>
+    </div>
+  </section>
+
+  <!-- ===================== CHART + CONTROL ===================== -->
+  <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div class="lg:col-span-2 bg-slate-800 p-5 rounded-2xl border border-slate-700">
+      <div class="flex flex-wrap justify-between items-center gap-2 mb-3">
+        <h3 class="font-semibold">📈 Nhiệt độ & hoạt động sò lạnh</h3>
+        <div id="range-tabs" class="flex flex-wrap gap-1 text-xs font-bold">
+          <button data-range="live" class="px-3 py-1 rounded-lg bg-slate-700 tab-on">Live</button>
+          <button data-range="1"   class="px-3 py-1 rounded-lg bg-slate-700">1 giờ</button>
+          <button data-range="6"   class="px-3 py-1 rounded-lg bg-slate-700">6 giờ</button>
+          <button data-range="24"  class="px-3 py-1 rounded-lg bg-slate-700">24 giờ</button>
+          <button data-range="168" class="px-3 py-1 rounded-lg bg-slate-700">7 ngày</button>
+        </div>
+      </div>
+      <div class="h-72"><canvas id="chart-temp"></canvas></div>
+      <div class="flex justify-between items-center mt-2 text-xs text-slate-500">
+        <span id="chart-note">Live: dữ liệu MQTT mỗi 2 s (không lưu)</span>
+        <button id="btn-csv" class="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded-lg font-bold text-slate-200">⬇ Xuất CSV</button>
+      </div>
+    </div>
+
+    <div class="bg-slate-800 p-5 rounded-2xl border border-slate-700 space-y-3">
+      <div class="flex justify-between items-center border-b border-slate-700 pb-2">
+        <h3 class="font-semibold">🎛️ Điều khiển</h3>
+        <button id="btn-mode" data-toggle="mode" class="cmd px-3 py-1 rounded-lg text-xs font-extrabold bg-cyan-600">AUTO</button>
+      </div>
+      <button data-cmd='{"device":"feed","action":"ON"}' class="cmd w-full py-3 bg-amber-500 hover:bg-amber-600 font-bold rounded-xl text-slate-950">🍤 CHO CÁ ĂN NGAY</button>
+      <div class="flex justify-between items-center p-3 bg-slate-900/70 rounded-xl">
+        <div><div class="font-semibold text-sm">Sò lạnh Peltier</div><div class="text-xs text-slate-400">Bấm = MANUAL 30 phút</div></div>
+        <button id="btn-chiller" data-toggle="chiller" class="cmd w-20 py-2 rounded-lg text-xs font-extrabold bg-slate-700">--</button>
+      </div>
+      <div class="flex justify-between items-center p-3 bg-slate-900/70 rounded-xl">
+        <div><div class="font-semibold text-sm">Máy bơm lọc</div><div class="text-xs text-slate-400">Tắt bơm = khóa sò</div></div>
+        <button id="btn-pump" data-toggle="pump" class="cmd w-20 py-2 rounded-lg text-xs font-extrabold bg-slate-700">--</button>
+      </div>
+      <div class="flex justify-between items-center p-3 bg-slate-900/70 rounded-xl">
+        <div><div class="font-semibold text-sm">Quạt tản nhiệt</div><div class="text-xs text-slate-400">Tự động theo sò</div></div>
+        <span id="st-fan" class="w-20 py-2 text-center rounded-lg text-xs font-extrabold bg-slate-700">--</span>
+      </div>
+      <button data-cmd='{"device":"test","action":"START"}' class="cmd w-full py-2 bg-indigo-600 hover:bg-indigo-700 font-bold rounded-xl text-xs">🧪 Self-Test phần cứng</button>
+    </div>
+  </section>
+
+  <!-- ===================== FEEDS + SETTINGS ===================== -->
+  <section class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+    <div class="lg:col-span-2 bg-slate-800 p-5 rounded-2xl border border-slate-700">
+      <h3 class="font-semibold mb-3">🍤 Số lần cho ăn 7 ngày (theo lịch / thủ công)</h3>
+      <div class="h-56"><canvas id="chart-feed"></canvas></div>
+    </div>
+    <div class="bg-slate-800 p-5 rounded-2xl border border-slate-700 space-y-4">
+      <h3 class="font-semibold border-b border-slate-700 pb-2">⚙️ Cài đặt (lưu NVS trên ESP32)</h3>
+      <div>
+        <label class="text-xs text-slate-400">Lịch cho ăn (HH:MM, cách nhau dấu phẩy, tối đa 4)</label>
+        <div class="flex gap-2 mt-1">
+          <input id="in-sched" placeholder="07:00,17:30" class="flex-1 min-w-0 bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm font-mono">
+          <button id="btn-sched" class="px-3 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-xs font-bold">Lưu</button>
+        </div>
+      </div>
+      <div>
+        <label class="text-xs text-slate-400">Ngưỡng tắt / bật sò (°C)</label>
+        <div class="flex gap-2 mt-1">
+          <input id="in-off" type="number" step="0.1" placeholder="25.5" class="w-20 bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
+          <input id="in-on"  type="number" step="0.1" placeholder="27.0" class="w-20 bg-slate-900 border border-slate-700 rounded-lg px-2 py-2 text-sm">
+          <button id="btn-sp" class="px-3 bg-emerald-600 hover:bg-emerald-700 rounded-lg text-xs font-bold">Lưu</button>
+        </div>
+      </div>
+      <button id="btn-time" class="w-full py-2 bg-slate-700 hover:bg-slate-600 rounded-xl text-xs font-bold">🕒 Đồng bộ giờ trình duyệt → RTC</button>
+    </div>
+  </section>
+
+  <!-- ===================== MQTT TERMINAL ===================== -->
+  <section class="bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden">
+    <div class="bg-slate-900 px-4 py-2.5 border-b border-slate-800 flex flex-wrap gap-2 items-center justify-between">
+      <span class="text-xs font-mono font-bold text-slate-300">🖥️ KẾT NỐI MQTT (realtime) · topic <span id="topic-lbl" class="text-emerald-400">--</span></span>
+      <div class="flex items-center gap-3">
+        <label class="flex items-center gap-1.5 text-xs text-slate-400"><input type="checkbox" id="chk-scroll" checked class="accent-teal-500"> Auto-scroll</label>
+        <button id="btn-clear-term" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1 rounded border border-slate-700">🧹 Xóa</button>
+      </div>
+    </div>
+    <div id="term" class="p-3 font-mono text-xs h-48 overflow-y-auto space-y-0.5 text-emerald-400"></div>
+  </section>
+
+  <!-- ===================== EVENTS ===================== -->
+  <section class="bg-slate-800 p-5 rounded-2xl border border-slate-700">
+    <div class="flex flex-wrap justify-between items-center gap-2 mb-3">
+      <h3 class="font-semibold">📋 Nhật ký sự kiện (database)</h3>
+      <div class="flex gap-2">
+        <select id="ev-filter" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-xs">
+          <option value="">Tất cả</option><option value="feed">Cho ăn</option><option value="alarm">Cảnh báo</option>
+          <option value="chiller">Sò lạnh</option><option value="command">Lệnh web</option><option value="time_sync">Đồng bộ giờ</option>
+        </select>
+        <button id="btn-refresh" class="px-3 py-1 bg-slate-700 hover:bg-slate-600 rounded-lg text-xs font-bold">🔄 Làm mới</button>
+      </div>
+    </div>
+    <div class="overflow-x-auto max-h-80 overflow-y-auto">
+      <table class="w-full text-xs">
+        <thead class="text-slate-400 sticky top-0 bg-slate-800"><tr><th class="text-left py-2 pr-4">Thời gian</th><th class="text-left pr-4">Loại</th><th class="text-left">Chi tiết</th></tr></thead>
+        <tbody id="ev-body" class="font-mono"><tr><td colspan="3" class="py-3 text-slate-500">Đang tải…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+</div>
+
+<!-- Toast -->
+<div id="toasts" class="fixed bottom-4 right-4 space-y-2 z-50"></div>
+
+<script>
+/* =====================================================================
+ * CẤU HÌNH
+ * Khi chạy trên Vercel: cấu hình MQTT lấy từ /api/config (Environment Variables),
+ * KHÔNG cần sửa file này. FALLBACK chỉ dùng khi mở file trực tiếp trên máy.
+ * ===================================================================== */
+const FALLBACK = {
+  url: "wss://broker.hivemq.com:8884/mqtt",
+  topicBase: "smartaquarium_node2026",   // PHẢI trùng TOPIC_BASE trong firmware
+  username: "",
+  password: "",
+};
+const CONFIG = {
+  API_BASE: "",                 // để trống = cùng domain Vercel. Mở file local mà muốn gọi API thật: "https://YOUR-APP.vercel.app"
+  ACK_TIMEOUT_MS: 6000,
+  DB_REFRESH_MS: 60000,
+};
+
+let T = {};           // tên topic, gán sau khi có cấu hình
+let client = null;    // MQTT client
+const $ = id => document.getElementById(id);
+const fmt = (v, d = 1) => (v == null || isNaN(v)) ? '--' : Number(v).toFixed(d);
+const tz = { timeZone: 'Asia/Ho_Chi_Minh' };
+
+let state = { chiller: false, pump: true, mode: 'AUTO', sp_on: 27, sp_off: 25.5 };
+let range = 'live';
+let dbOnline = false;
+
+/* ============================ API (Vercel → Postgres) ============================ */
+async function api(path) {
+  const res = await fetch(CONFIG.API_BASE + path, { cache: 'no-store' });
+  const isJson = (res.headers.get('content-type') || '').includes('json');
+  const body = isJson ? await res.json() : null;
+  if (!res.ok || !isJson) throw new Error(body?.error || `API ${path} → HTTP ${res.status}`);
+  return body;
+}
+
+async function loadStats() {
+  const hours = range === 'live' ? 24 : Number(range);
+  try {
+    const s = await api(`/api/stats?hours=${hours}`);
+    $('k-avg').innerText = fmt(s.temp_avg); $('k-min').innerText = fmt(s.temp_min); $('k-max').innerText = fmt(s.temp_max);
+    $('k-duty').innerText = fmt(s.chiller_pct, 0); $('k-samples').innerText = s.samples ?? 0;
+    document.querySelectorAll('.range-lbl').forEach(e => e.innerText = hours >= 168 ? '7 ngày' : hours + 'h');
+    dbOnline = true;
+    badge('badge-db', true, 'Database: OK' + (s.last_seen ? ' · ' + timeAgo(s.last_seen) : ''));
+  } catch (e) { dbError(e); }
+}
+
+async function loadHistory(hours) {
+  $('chart-note').innerText = 'Đang tải từ database…';
+  try {
+    const { points, step } = await api(`/api/history?hours=${hours}`);
+    if (range !== String(hours)) return;               // người dùng đã đổi tab
+    const label = b => new Date(b).toLocaleString('vi-VN', hours <= 24 ? { ...tz, hour: '2-digit', minute: '2-digit' } : { ...tz, day: '2-digit', month: '2-digit', hour: '2-digit' });
+    tempChart.data.labels = points.map(r => label(r.bucket));
+    setSeries(points.map(r => r.temp_avg), points.map(r => r.temp_min), points.map(r => r.temp_max), points.map(r => r.chiller_pct));
+    const stepVi = { '1 minute': '1 phút', '10 minutes': '10 phút', '1 hour': '1 giờ' }[step] || step;
+    $('chart-note').innerText = points.length
+      ? `Database: ${points.length} điểm (${points.reduce((a, r) => a + r.samples, 0)} mẫu), gom ${stepVi}/điểm`
+      : 'Database chưa có dữ liệu trong khoảng này';
+  } catch (e) { $('chart-note').innerText = 'Không tải được lịch sử'; dbError(e); }
+}
+
+async function loadFeeds() {
+  try {
+    const { points } = await api('/api/feeds?days=7');
+    feedChart.data.labels = points.map(r => new Date(r.day + 'T00:00:00').toLocaleDateString('vi-VN', { weekday: 'short', day: '2-digit', month: '2-digit' }));
+    feedChart.data.datasets[0].data = points.map(r => r.scheduled);
+    feedChart.data.datasets[1].data = points.map(r => r.manual);
+    feedChart.update();
+  } catch (e) { dbError(e); }
+}
+
+async function loadEvents() {
+  const f = $('ev-filter').value;
+  try {
+    const { events } = await api(`/api/events?limit=100${f ? '&type=' + encodeURIComponent(f) : ''}`);
+    $('ev-body').innerHTML = '';
+    events.forEach(e => addEventRow(e, false));
+    if (!events.length) $('ev-body').innerHTML = '<tr><td colspan="3" class="py-3 text-slate-500">Chưa có dữ liệu.</td></tr>';
+  } catch (e) {
+    $('ev-body').innerHTML = '<tr><td colspan="3" class="py-3 text-slate-500">Không kết nối được API – chỉ hiện sự kiện realtime.</td></tr>';
+    dbError(e);
+  }
+}
+
+function exportCsv() {
+  const hours = range === 'live' ? 24 : Number(range);
+  if (!dbOnline) return toast('Database chưa sẵn sàng', false);
+  const a = document.createElement('a');
+  a.href = `${CONFIG.API_BASE}/api/export?hours=${hours}`; a.download = `aquarium_${hours}h.csv`; a.click();
+}
+
+let lastDbErr = 0;
+function dbError(err) {
+  console.error(err); dbOnline = false;
+  badge('badge-db', false, 'Database: lỗi');
+  if (Date.now() - lastDbErr > 30000) { lastDbErr = Date.now(); toast('Database: ' + (err.message || err), false); }
+}
+function refreshDb() { loadStats(); loadFeeds(); loadEvents(); if (range !== 'live') loadHistory(Number(range)); }
+
+/* ============================ CHARTS ============================ */
+Chart.defaults.color = '#94a3b8'; Chart.defaults.borderColor = '#334155';
+const tempChart = new Chart($('chart-temp'), {
+  data: { labels: [], datasets: [
+    { type: 'line', label: 'Nhiệt độ (°C)', data: [], borderColor: '#22d3ee', borderWidth: 2, pointRadius: 0, tension: .3, yAxisID: 'y', order: 1 },
+    { type: 'line', label: 'Max', data: [], borderColor: 'transparent', backgroundColor: 'rgba(34,211,238,.12)', pointRadius: 0, fill: '+1', yAxisID: 'y', order: 2 },
+    { type: 'line', label: 'Min', data: [], borderColor: 'transparent', pointRadius: 0, fill: false, yAxisID: 'y', order: 2 },
+    { type: 'line', label: 'Ngưỡng bật', data: [], borderColor: '#f97316', borderDash: [6, 4], borderWidth: 1, pointRadius: 0, yAxisID: 'y', order: 0 },
+    { type: 'line', label: 'Ngưỡng tắt', data: [], borderColor: '#10b981', borderDash: [6, 4], borderWidth: 1, pointRadius: 0, yAxisID: 'y', order: 0 },
+    { type: 'bar',  label: 'Sò lạnh (%)', data: [], backgroundColor: 'rgba(59,130,246,.22)', yAxisID: 'y2', order: 3, barPercentage: 1, categoryPercentage: 1 },
+  ] },
+  options: {
+    responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: 'index', intersect: false },
+    plugins: { legend: { labels: { boxWidth: 12, filter: i => !['Max', 'Min'].includes(i.text) } } },
+    scales: {
+      x: { grid: { color: '#1e293b' }, ticks: { maxTicksLimit: 10 } },
+      y: { grid: { color: '#1e293b' }, suggestedMin: 22, suggestedMax: 30, title: { display: true, text: '°C' } },
+      y2: { position: 'right', min: 0, max: 100, grid: { display: false }, title: { display: true, text: 'Sò %' } },
+    }
+  }
+});
+function setSeries(avg, min, max, duty) {
+  const ds = tempChart.data.datasets;
+  ds[0].data = avg; ds[1].data = max; ds[2].data = min; ds[5].data = duty;
+  ds[3].data = avg.map(() => state.sp_on); ds[4].data = avg.map(() => state.sp_off);
+  tempChart.update();
+}
+function pushLive(label, temp, chiller) {
+  if (range !== 'live') return;
+  const L = tempChart.data.labels, ds = tempChart.data.datasets;
+  L.push(label); ds[0].data.push(temp); ds[1].data.push(null); ds[2].data.push(null);
+  ds[3].data.push(state.sp_on); ds[4].data.push(state.sp_off); ds[5].data.push(chiller ? 100 : 0);
+  if (L.length > 300) { L.shift(); ds.forEach(d => d.data.shift()); }   // ~10 phút
+  tempChart.update();
+}
+
+const feedChart = new Chart($('chart-feed'), {
+  type: 'bar',
+  data: { labels: [], datasets: [
+    { label: 'Theo lịch', data: [], backgroundColor: '#f59e0b' },
+    { label: 'Thủ công (nút/web)', data: [], backgroundColor: '#64748b' },
+  ] },
+  options: { responsive: true, maintainAspectRatio: false, scales: { x: { stacked: true, grid: { display: false } }, y: { stacked: true, beginAtZero: true, ticks: { precision: 0 }, grid: { color: '#1e293b' } } } }
+});
+
+/* ============================ MQTT ============================ */
+const pending = new Map();   // id -> {resolve, timer}
+let lastTelemetryAt = 0, watchdogWarned = false;
+function connectMqtt(cfg) {
+  T = ['telemetry', 'command', 'status', 'event', 'ack'].reduce((o, k) => (o[k] = `${cfg.topicBase}/${k}`, o), {});
+  $('topic-lbl').innerText = cfg.topicBase + '/*';
+  const opts = { clientId: 'web-' + Math.random().toString(16).slice(2, 10), reconnectPeriod: 3000, connectTimeout: 10000, clean: true };
+  if (cfg.username) { opts.username = cfg.username; opts.password = cfg.password; }   // HiveMQ Cloud
+  term('SYSTEM', `Đang kết nối ${cfg.url} …`, 'text-slate-400');
+  client = mqtt.connect(cfg.url, opts);
+  client.on('connect', () => {
+    badge('badge-mqtt', true, 'MQTT: đã kết nối');
+    client.subscribe(Object.values(T).filter(t => t !== T.command));
+    term('SYSTEM', `🟢 Đã kết nối broker, đang chờ dữ liệu từ ESP32 trên ${cfg.topicBase}/telemetry`, 'text-emerald-400');
+  });
+  client.on('reconnect', () => term('SYSTEM', '… đang kết nối lại broker', 'text-amber-400'));
+  client.on('offline', () => term('SYSTEM', '🔴 Mất mạng tới broker (kiểm tra Internet của máy/điện thoại)', 'text-rose-400'));
+  client.on('close', () => badge('badge-mqtt', false, 'MQTT: mất kết nối'));
+  client.on('error', err => {
+    badge('badge-mqtt', false, 'MQTT: ' + (err.code === 5 || err.code === 4 ? 'sai tài khoản' : 'lỗi'));
+    term('ERROR', err.message || String(err), 'text-rose-400'); console.error(err);
+  });
+  client.on('message', (topic, msg) => handleMessage(topic, msg.toString()));
+
+  // Cảnh báo khi đã nối broker mà ESP32 không gửi gì
+  setInterval(() => {
+    if (!client.connected) return;
+    if (Date.now() - lastTelemetryAt > 10000 && !watchdogWarned) {
+      watchdogWarned = true;
+      term('CHECK', '⚠️ 10 s chưa nhận telemetry: ESP32 chưa bật / chưa vào Wi-Fi / sai TOPIC_BASE trong firmware', 'text-amber-300');
+    }
+  }, 2000);
+}
+
+function term(tag, msg, color = 'text-emerald-400') {
+  const box = $('term'); if (!box) return;
+  const line = document.createElement('div');
+  line.className = color;
+  line.textContent = `[${new Date().toLocaleTimeString('vi-VN')}] [${tag}] ${msg}`;
+  box.append(line);
+  while (box.children.length > 150) box.firstChild.remove();
+  if ($('chk-scroll').checked) box.scrollTop = box.scrollHeight;
+}
+
+let devTimer;
+function handleMessage(topic, text) {
+  if (topic === T.status) {
+    term('STATUS', 'ESP32: ' + text + (text === 'offline' ? ' (tin LWT/retained – chỉ đúng nếu không còn dữ liệu DATA)' : ''), text === 'online' ? 'text-emerald-300' : 'text-rose-400');
+    if (text === 'offline' && Date.now() - lastTelemetryAt < 6000) return;   // vẫn đang nhận dữ liệu → bỏ qua tin offline cũ
+    return badge('badge-dev', text === 'online', 'Thiết bị: ' + text);
+  }
+  let d; try { d = JSON.parse(text); } catch { return; }
+
+  if (topic === T.ack) {
+    term('ACK', `${d.device}: ${d.ok ? 'OK' : 'FAIL'} – ${d.msg}`, d.ok ? 'text-emerald-300' : 'text-rose-400');
+    const p = pending.get(d.id); if (!p) return;
+    clearTimeout(p.timer); pending.delete(d.id); p.resolve(d); return;
+  }
+  if (topic === T.event) {
+    addEventRow({ created_at: new Date().toISOString(), type: d.type, detail: d.detail }, true);
+    if (d.type === 'feed') setTimeout(loadFeeds, 3000);
+    return;
+  }
+  if (topic !== T.telemetry) return;
+  lastTelemetryAt = Date.now(); watchdogWarned = false;
+  term('DATA', `T=${d.temp == null ? 'ERR' : fmt(d.temp)}°C · Sò ${d.chiller ? 'ON' : 'OFF'} · Bơm ${d.pump ? 'ON' : 'OFF'} · Quạt ${d.fan ? 'ON' : 'OFF'} · ${d.mode} · ăn ${d.feed_today} · ${d.alarm}`, 'text-cyan-300');
+
+  badge('badge-dev', true, 'Thiết bị: online');
+  clearTimeout(devTimer); devTimer = setTimeout(() => badge('badge-dev', false, 'Thiết bị: không phản hồi'), 10000);
+
+  Object.assign(state, { chiller: !!d.chiller, pump: !!d.pump, mode: d.mode, sp_on: d.sp_on ?? state.sp_on, sp_off: d.sp_off ?? state.sp_off });
+  $('temp').innerText = d.temp == null ? 'ERR' : fmt(d.temp);
+  $('sp-on-v').innerText = fmt(state.sp_on); $('sp-off-v').innerText = fmt(state.sp_off);
+  $('feed-today').innerText = d.feed_today ?? 0; $('feed-total').innerText = d.feed_count ?? 0;
+  $('next-feed').innerText = d.next_feed ?? '--';
+  $('dev-time').innerText = d.time ?? '--'; $('time-src').innerText = d.time_src ?? '--';
+  $('rssi').innerText = d.rssi ?? '--'; $('fw').innerText = d.fw ?? '--';
+  $('db-cnt').innerText = d.db_ok != null ? `${d.db_ok}✓ ${d.db_fail}✗` : '--';
+  if (document.activeElement !== $('in-sched')) $('in-sched').value = d.schedule ?? '';
+
+  onOff('btn-chiller', state.chiller); onOff('btn-pump', state.pump); onOff('st-fan', !!d.fan);
+  $('btn-mode').innerText = state.mode;
+  $('btn-mode').classList.toggle('bg-cyan-600', state.mode === 'AUTO');
+  $('btn-mode').classList.toggle('bg-orange-600', state.mode !== 'AUTO');
+
+  const alarm = d.alarm && d.alarm !== 'NONE';
+  $('alarm-bar').classList.toggle('hidden', !alarm);
+  if (alarm) $('alarm-text').innerText = '⚠️ ' + ({ SENSOR_FAULT: 'Mất cảm biến DS18B20', TEMP_HIGH: 'Nước quá nóng (≥ 30°C)', TEMP_LOW: 'Nước quá lạnh (≤ 22°C)', TIME_INVALID: 'Chưa có giờ hợp lệ – lịch cho ăn tạm dừng' }[d.alarm] || d.alarm);
+
+  if (d.temp != null) pushLive(d.time ? d.time.slice(11) : new Date().toLocaleTimeString('vi-VN'), d.temp, d.chiller);
+}
+
+/** Gửi lệnh và CHỜ ESP32 xác nhận (topic /ack). Trả về {ok,msg}. */
+function sendCommand(obj) {
+  return new Promise(resolve => {
+    if (!client || !client.connected) return resolve({ ok: false, msg: 'Chưa kết nối MQTT broker' });
+    const id = Math.random().toString(36).slice(2, 10);
+    const timer = setTimeout(() => { pending.delete(id); resolve({ ok: false, msg: 'Thiết bị không phản hồi (timeout)' }); }, CONFIG.ACK_TIMEOUT_MS);
+    pending.set(id, { resolve, timer });
+    const payload = JSON.stringify({ ...obj, id });
+    client.publish(T.command, payload);
+    term('CMD', '📤 ' + payload, 'text-amber-300');
+  });
+}
+
+/** Gắn hành vi cho nút: khóa nút + spinner → chờ ACK → toast kết quả. */
+async function runButton(btn, obj) {
+  const html = btn.innerHTML;
+  btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>';
+  const res = await sendCommand(obj);
+  btn.disabled = false; btn.innerHTML = html;
+  toast(res.msg || (res.ok ? 'OK' : 'Lỗi'), res.ok);
+  return res;
+}
+
+/* ============================ UI ============================ */
+document.addEventListener('click', e => {
+  const btn = e.target.closest('button.cmd'); if (!btn) return;
+  if (btn.dataset.cmd) return runButton(btn, JSON.parse(btn.dataset.cmd));
+  const t = btn.dataset.toggle;
+  if (t === 'chiller') runButton(btn, { device: 'chiller', action: state.chiller ? 'OFF' : 'ON' });
+  if (t === 'pump')    runButton(btn, { device: 'pump', action: state.pump ? 'OFF' : 'ON' });
+  if (t === 'mode')    runButton(btn, { device: 'mode', action: state.mode === 'AUTO' ? 'MANUAL' : 'AUTO' });
+});
+
+$('btn-sched').onclick = e => {
+  const v = $('in-sched').value.replace(/\s/g, '');
+  if (v && !/^([01]\d|2[0-3]):[0-5]\d(,([01]\d|2[0-3]):[0-5]\d){0,3}$/.test(v)) return toast('Lịch sai định dạng (vd 07:00,17:30)', false);
+  runButton(e.currentTarget, { device: 'schedule', slots: v });
+};
+$('btn-sp').onclick = e => {
+  const on = parseFloat($('in-on').value), off = parseFloat($('in-off').value);
+  if (isNaN(on) || isNaN(off) || off > on - 0.5) return toast('Ngưỡng tắt phải thấp hơn ngưỡng bật ≥ 0.5°C', false);
+  runButton(e.currentTarget, { device: 'setpoint', on, off });
+};
+$('btn-time').onclick = e => runButton(e.currentTarget, { device: 'time', epoch: Math.floor(Date.now() / 1000) });
+$('btn-refresh').onclick = refreshDb;
+$('ev-filter').onchange = loadEvents;
+$('btn-csv').onclick = exportCsv;
+
+$('range-tabs').onclick = e => {
+  const b = e.target.closest('button[data-range]'); if (!b) return;
+  document.querySelectorAll('#range-tabs button').forEach(x => x.classList.toggle('tab-on', x === b));
+  range = b.dataset.range;
+  tempChart.data.labels = []; tempChart.data.datasets.forEach(d => d.data = []); tempChart.update();
+  if (range === 'live') $('chart-note').innerText = 'Live: dữ liệu MQTT mỗi 2 s (không lưu)';
+  else loadHistory(Number(range));
+  loadStats();
+};
+
+function addEventRow(e, prepend) {
+  const body = $('ev-body');
+  if (body.children.length === 1 && body.children[0].children.length === 1) body.innerHTML = '';
+  const f = $('ev-filter').value; if (prepend && f && e.type !== f) return;
+  const color = { alarm: 'text-red-400', feed: 'text-amber-400', chiller: 'text-sky-400', command: 'text-violet-400', error: 'text-red-400' }[e.type] || 'text-emerald-400';
+  const tr = document.createElement('tr'); tr.className = 'border-t border-slate-700/50';
+  tr.innerHTML = `<td class="py-1.5 pr-4 whitespace-nowrap text-slate-400"></td><td class="pr-4 ${color}"></td><td></td>`;
+  tr.children[0].innerText = new Date(e.created_at).toLocaleString('vi-VN', tz);
+  tr.children[1].innerText = e.type; tr.children[2].innerText = e.detail ?? '';
+  prepend ? body.prepend(tr) : body.append(tr);
+  while (body.children.length > 200) body.lastChild.remove();
+}
+function onOff(id, on) {
+  const el = $(id); if (el.disabled) return;
+  el.innerText = on ? 'ON' : 'OFF';
+  el.classList.toggle('bg-emerald-500', on); el.classList.toggle('text-slate-950', on); el.classList.toggle('bg-slate-700', !on);
+}
+function badge(id, ok, text) {
+  $(id).innerText = text;
+  $(id).className = 'px-3 py-1.5 rounded-full text-xs font-bold border ' + (ok ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30' : 'bg-red-500/20 text-red-300 border-red-500/30');
+}
+function toast(msg, ok) {
+  const t = document.createElement('div');
+  t.className = 'px-4 py-3 rounded-xl shadow-lg text-sm font-semibold ' + (ok ? 'bg-emerald-600' : 'bg-red-600');
+  t.innerText = (ok ? '✅ ' : '❌ ') + msg; $('toasts').append(t);
+  setTimeout(() => t.remove(), 3500);
+}
+function timeAgo(iso) {
+  const s = (Date.now() - new Date(iso)) / 1000;
+  return s < 90 ? 'vừa xong' : s < 3600 ? Math.round(s / 60) + ' phút trước' : Math.round(s / 3600) + ' giờ trước';
+}
+
+$('btn-clear-term').onclick = () => { $('term').innerHTML = ''; };
+
+(async function init() {
+  // Hỏi /api/config tối đa 2.5 s (chỉ để đổi topic/HiveMQ Cloud qua env). Lỗi/chậm → dùng FALLBACK như bình thường.
+  let cfg = { ...FALLBACK };
+  try {
+    const remote = await Promise.race([api('/api/config'), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))]);
+    for (const [k, v] of Object.entries(remote.mqtt || {})) if (v) cfg[k] = v;
+    if (!remote.database) badge('badge-db', false, 'Database: chưa kết nối Neon');
+  } catch { term('SYSTEM', 'Không đọc được /api/config – dùng cấu hình MQTT viết sẵn', 'text-slate-500'); }
+  connectMqtt(cfg);
+  refreshDb();
+  setInterval(refreshDb, CONFIG.DB_REFRESH_MS);
+})();
+</script>
+</body>
+</html>
