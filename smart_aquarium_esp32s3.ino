@@ -42,6 +42,7 @@
 #include <esp_sntp.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <esp_system.h>
 
 // ============================================================================
 // 0. CHỌN DRIVER OLED
@@ -87,7 +88,7 @@
 // ============================================================================
 // 2. CẤU HÌNH
 // ============================================================================
-const char* FW_VERSION   = "2.2.0";
+const char* FW_VERSION   = "2.2.1";
 const char* WIFI_SSID    = "HO TRO SINH VIEN"; // Wi-Fi 2.4 GHz
 const char* WIFI_PASS    = "12345678@";
 // ---- MQTT: chọn 1 trong 2 ----
@@ -178,6 +179,8 @@ unsigned long lastAlarmBeepMs = 0;
 
 // Thời gian
 bool rtcPresent = false;
+bool oledPresent = false;
+bool dbActive = false;          // DB chỉ chạy khi DB_ENABLED và API_BASE_URL đã sửa
 bool timeValid  = false;
 enum TimeSrc { SRC_NONE, SRC_RTC, SRC_NTP, SRC_WEB };
 TimeSrc timeSrc = SRC_NONE;
@@ -267,7 +270,7 @@ volatile uint32_t dbOk = 0, dbFail = 0, dbDropped = 0;
 unsigned long lastDbTelemetryMs = 0;
 
 void dbEnqueue(const char* table, JsonDocument &row) {
-  if (!DB_ENABLED || dbQueue == nullptr || deviceId.length() < 3) return;
+  if (!dbActive || dbQueue == nullptr || deviceId.length() < 3) return;
   row["device_id"] = deviceId;
   if (timeValid) {                                   // gắn giờ thực của thiết bị (UTC)
     time_t e = time(nullptr); struct tm u; gmtime_r(&e, &u);
@@ -804,17 +807,27 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 void handleConnectivity(unsigned long now) {
+  static bool wifiWasUp = false;
   if (WiFi.status() != WL_CONNECTED) {
-    if (now - lastWifiTryMs >= WIFI_RETRY_MS) { lastWifiTryMs = now; WiFi.disconnect(); WiFi.begin(WIFI_SSID, WIFI_PASS); }
+    if (wifiWasUp) { wifiWasUp = false; Serial.println("[WIFI] Mat ket noi Wi-Fi"); }
+    if (now - lastWifiTryMs >= WIFI_RETRY_MS) {
+      lastWifiTryMs = now;
+      Serial.printf("[WIFI] Dang ket noi lai \"%s\" (status=%d)\n", WIFI_SSID, (int)WiFi.status());
+      WiFi.disconnect(); WiFi.begin(WIFI_SSID, WIFI_PASS);
+    }
     return;
   }
+  if (!wifiWasUp) { wifiWasUp = true; Serial.printf("[WIFI] Da ket noi, IP %s, RSSI %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI()); }
+  static bool mqttWasUp = false;
   if (!mqtt.connected()) {
+    if (mqttWasUp) { mqttWasUp = false; Serial.printf("[MQTT] Mat ket noi broker (state=%d) -> web se bao OFFLINE\n", mqtt.state()); }
     if (now - lastMqttTryMs < MQTT_RETRY_MS) return;
     lastMqttTryMs = now;
     const char* user = strlen(MQTT_USER) ? MQTT_USER : nullptr;
     const char* pass = strlen(MQTT_PASS) ? MQTT_PASS : nullptr;
     if (mqtt.connect(deviceId.c_str(), user, pass, topicStatus.c_str(), 1, true, "offline")) {
       Serial.printf("[MQTT] Da ket noi %s:%d  topic=%s/*\n", MQTT_HOST, MQTT_PORT, TOPIC_BASE);
+      mqttWasUp = true;
       mqtt.publish(topicStatus.c_str(), "online", true);
       mqtt.subscribe(topicCommand.c_str());
       publishEvent("boot", String("FW ") + FW_VERSION);
@@ -869,9 +882,19 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.printf("\n=== SMART AQUARIUM FW %s ===\n", FW_VERSION);
+  {
+    esp_reset_reason_t rr = esp_reset_reason();
+    const char* why = rr == ESP_RST_POWERON ? "Bat nguon" : rr == ESP_RST_SW ? "Reset mem" :
+                      rr == ESP_RST_PANIC ? "CRASH (loi code/tran stack)" : rr == ESP_RST_BROWNOUT ? "BROWNOUT – SUT AP NGUON!" :
+                      rr == ESP_RST_INT_WDT || rr == ESP_RST_TASK_WDT || rr == ESP_RST_WDT ? "WATCHDOG (treo)" :
+                      rr == ESP_RST_EXT ? "Nut RESET" : rr == ESP_RST_USB ? "USB" : "Khac";
+    Serial.printf("[SYS] Ly do khoi dong: %s (%d) | heap trong: %u byte\n", why, (int)rr, (unsigned)ESP.getFreeHeap());
+  }
 
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);
-  if (OLED_BEGIN()) {
+  Wire.setTimeOut(20);                  // I2C lỗi không làm treo loop lâu
+  oledPresent = OLED_BEGIN();
+  if (oledPresent) {
     display.clearDisplay(); display.cp437(true);
     display.setTextColor(OLED_WHITE); display.setTextSize(1);
     display.setCursor(12, 20); display.println("BE CA SMART AI");
@@ -907,6 +930,7 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
+  WiFi.setSleep(false);                 // tắt modem-sleep → MQTT không bị rớt
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   lastWifiTryMs = millis();
 
@@ -918,11 +942,14 @@ void setup() {
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setCallback(mqttCallback);
   mqtt.setBufferSize(768);
-  mqtt.setSocketTimeout(3);
+  mqtt.setSocketTimeout(5);
+  mqtt.setKeepAlive(30);                // chịu được loop bận lâu hơn trước khi broker báo offline
 
-  if (DB_ENABLED) {
+  dbActive = DB_ENABLED && strstr(API_BASE_URL, "YOUR-APP") == nullptr && strncmp(API_BASE_URL, "https://", 8) == 0;
+  Serial.printf("[DB] %s\n", dbActive ? API_BASE_URL : "TAT (chua sua API_BASE_URL) – MQTT/web van chay binh thuong");
+  if (dbActive) {
     dbQueue = xQueueCreate(40, sizeof(DbJob));
-    xTaskCreatePinnedToCore(dbTask, "dbTask", 8192, nullptr, 1, nullptr, 0);   // loop() chạy core 1
+    xTaskCreatePinnedToCore(dbTask, "dbTask", 16384, nullptr, 1, nullptr, 0);  // HTTPS/TLS cần stack lớn (8 KB dễ tràn → crash → offline)
   }
 
   beep(1);
@@ -950,7 +977,7 @@ void loop() {
     handleAlarm(now);
   }
 
-  if (now - lastOledMs >= OLED_PERIOD_MS) { lastOledMs = now; renderOLED(); }
+  if (oledPresent && now - lastOledMs >= OLED_PERIOD_MS) { lastOledMs = now; renderOLED(); }
 
   if (now - lastTelemetryMs >= TELEMETRY_PERIOD_MS) {
     lastTelemetryMs = now;
