@@ -8,7 +8,7 @@ export default function handler(req, res) {
   res.status(200).json({
     mqtt: {
       url: process.env.MQTT_WS_URL || 'wss://broker.hivemq.com:8884/mqtt',
-      topicBase: process.env.MQTT_TOPIC_BASE || 'hcmute/esd/beca-nhomXX',
+      topicBase: process.env.MQTT_TOPIC_BASE || null,   // null = web dùng TOPIC viết sẵn trong index.html
       username: process.env.MQTT_WEB_USERNAME || '',
       password: process.env.MQTT_WEB_PASSWORD || '',
     },

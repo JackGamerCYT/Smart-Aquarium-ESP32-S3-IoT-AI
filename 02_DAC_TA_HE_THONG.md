@@ -164,7 +164,7 @@ flowchart TB
 
 ### 6.5 Giao thức MQTT
 
-`TOPIC_BASE = hcmute/esd/beca-nhomXX`
+`TOPIC_BASE = smartaquarium_node2026`
 
 | Topic | Hướng | QoS/Retain | Nội dung |
 |---|---|---|---|

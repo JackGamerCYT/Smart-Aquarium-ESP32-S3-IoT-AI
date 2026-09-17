@@ -69,7 +69,7 @@
     <div class="lg:col-span-2 bg-slate-800 p-5 rounded-2xl border border-slate-700">
       <div class="flex flex-wrap justify-between items-center gap-2 mb-3">
         <h3 class="font-semibold">📈 Nhiệt độ & hoạt động sò lạnh</h3>
-        <div id="range-tabs" class="flex gap-1 text-xs font-bold">
+        <div id="range-tabs" class="flex flex-wrap gap-1 text-xs font-bold">
           <button data-range="live" class="px-3 py-1 rounded-lg bg-slate-700 tab-on">Live</button>
           <button data-range="1"   class="px-3 py-1 rounded-lg bg-slate-700">1 giờ</button>
           <button data-range="6"   class="px-3 py-1 rounded-lg bg-slate-700">6 giờ</button>
@@ -133,6 +133,18 @@
     </div>
   </section>
 
+  <!-- ===================== MQTT TERMINAL ===================== -->
+  <section class="bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden">
+    <div class="bg-slate-900 px-4 py-2.5 border-b border-slate-800 flex flex-wrap gap-2 items-center justify-between">
+      <span class="text-xs font-mono font-bold text-slate-300">🖥️ KẾT NỐI MQTT (realtime) · topic <span id="topic-lbl" class="text-emerald-400">--</span></span>
+      <div class="flex items-center gap-3">
+        <label class="flex items-center gap-1.5 text-xs text-slate-400"><input type="checkbox" id="chk-scroll" checked class="accent-teal-500"> Auto-scroll</label>
+        <button id="btn-clear-term" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-2.5 py-1 rounded border border-slate-700">🧹 Xóa</button>
+      </div>
+    </div>
+    <div id="term" class="p-3 font-mono text-xs h-48 overflow-y-auto space-y-0.5 text-emerald-400"></div>
+  </section>
+
   <!-- ===================== EVENTS ===================== -->
   <section class="bg-slate-800 p-5 rounded-2xl border border-slate-700">
     <div class="flex flex-wrap justify-between items-center gap-2 mb-3">
@@ -165,7 +177,7 @@
  * ===================================================================== */
 const FALLBACK = {
   url: "wss://broker.hivemq.com:8884/mqtt",
-  topicBase: "hcmute/esd/beca-nhomXX",
+  topicBase: "smartaquarium_node2026",   // PHẢI trùng TOPIC_BASE trong firmware
   username: "",
   password: "",
 };
@@ -306,23 +318,55 @@ const feedChart = new Chart($('chart-feed'), {
 
 /* ============================ MQTT ============================ */
 const pending = new Map();   // id -> {resolve, timer}
+let lastTelemetryAt = 0, watchdogWarned = false;
 function connectMqtt(cfg) {
   T = ['telemetry', 'command', 'status', 'event', 'ack'].reduce((o, k) => (o[k] = `${cfg.topicBase}/${k}`, o), {});
-  const opts = { clientId: 'web-' + Math.random().toString(16).slice(2, 8), reconnectPeriod: 3000, connectTimeout: 10000 };
+  $('topic-lbl').innerText = cfg.topicBase + '/*';
+  const opts = { clientId: 'web-' + Math.random().toString(16).slice(2, 10), reconnectPeriod: 3000, connectTimeout: 10000, clean: true };
   if (cfg.username) { opts.username = cfg.username; opts.password = cfg.password; }   // HiveMQ Cloud
+  term('SYSTEM', `Đang kết nối ${cfg.url} …`, 'text-slate-400');
   client = mqtt.connect(cfg.url, opts);
-  client.on('connect', () => { badge('badge-mqtt', true, 'MQTT: đã kết nối'); client.subscribe(Object.values(T).filter(t => t !== T.command)); });
+  client.on('connect', () => {
+    badge('badge-mqtt', true, 'MQTT: đã kết nối');
+    client.subscribe(Object.values(T).filter(t => t !== T.command));
+    term('SYSTEM', `🟢 Đã kết nối broker, đang chờ dữ liệu từ ESP32 trên ${cfg.topicBase}/telemetry`, 'text-emerald-400');
+  });
+  client.on('reconnect', () => term('SYSTEM', '… đang kết nối lại broker', 'text-amber-400'));
+  client.on('offline', () => term('SYSTEM', '🔴 Mất mạng tới broker (kiểm tra Internet của máy/điện thoại)', 'text-rose-400'));
   client.on('close', () => badge('badge-mqtt', false, 'MQTT: mất kết nối'));
-  client.on('error', err => { badge('badge-mqtt', false, 'MQTT: ' + (err.code === 5 || err.code === 4 ? 'sai tài khoản' : 'lỗi')); console.error(err); });
+  client.on('error', err => {
+    badge('badge-mqtt', false, 'MQTT: ' + (err.code === 5 || err.code === 4 ? 'sai tài khoản' : 'lỗi'));
+    term('ERROR', err.message || String(err), 'text-rose-400'); console.error(err);
+  });
   client.on('message', (topic, msg) => handleMessage(topic, msg.toString()));
+
+  // Cảnh báo khi đã nối broker mà ESP32 không gửi gì
+  setInterval(() => {
+    if (!client.connected) return;
+    if (Date.now() - lastTelemetryAt > 10000 && !watchdogWarned) {
+      watchdogWarned = true;
+      term('CHECK', '⚠️ 10 s chưa nhận telemetry: ESP32 chưa bật / chưa vào Wi-Fi / sai TOPIC_BASE trong firmware', 'text-amber-300');
+    }
+  }, 2000);
+}
+
+function term(tag, msg, color = 'text-emerald-400') {
+  const box = $('term'); if (!box) return;
+  const line = document.createElement('div');
+  line.className = color;
+  line.textContent = `[${new Date().toLocaleTimeString('vi-VN')}] [${tag}] ${msg}`;
+  box.append(line);
+  while (box.children.length > 150) box.firstChild.remove();
+  if ($('chk-scroll').checked) box.scrollTop = box.scrollHeight;
 }
 
 let devTimer;
 function handleMessage(topic, text) {
-  if (topic === T.status) return badge('badge-dev', text === 'online', 'Thiết bị: ' + text);
+  if (topic === T.status) { term('STATUS', 'ESP32: ' + text, text === 'online' ? 'text-emerald-300' : 'text-rose-400'); return badge('badge-dev', text === 'online', 'Thiết bị: ' + text); }
   let d; try { d = JSON.parse(text); } catch { return; }
 
   if (topic === T.ack) {
+    term('ACK', `${d.device}: ${d.ok ? 'OK' : 'FAIL'} – ${d.msg}`, d.ok ? 'text-emerald-300' : 'text-rose-400');
     const p = pending.get(d.id); if (!p) return;
     clearTimeout(p.timer); pending.delete(d.id); p.resolve(d); return;
   }
@@ -332,6 +376,8 @@ function handleMessage(topic, text) {
     return;
   }
   if (topic !== T.telemetry) return;
+  lastTelemetryAt = Date.now(); watchdogWarned = false;
+  term('DATA', `T=${d.temp == null ? 'ERR' : fmt(d.temp)}°C · Sò ${d.chiller ? 'ON' : 'OFF'} · Bơm ${d.pump ? 'ON' : 'OFF'} · Quạt ${d.fan ? 'ON' : 'OFF'} · ${d.mode} · ăn ${d.feed_today} · ${d.alarm}`, 'text-cyan-300');
 
   badge('badge-dev', true, 'Thiết bị: online');
   clearTimeout(devTimer); devTimer = setTimeout(() => badge('badge-dev', false, 'Thiết bị: không phản hồi'), 10000);
@@ -365,7 +411,9 @@ function sendCommand(obj) {
     const id = Math.random().toString(36).slice(2, 10);
     const timer = setTimeout(() => { pending.delete(id); resolve({ ok: false, msg: 'Thiết bị không phản hồi (timeout)' }); }, CONFIG.ACK_TIMEOUT_MS);
     pending.set(id, { resolve, timer });
-    client.publish(T.command, JSON.stringify({ ...obj, id }));
+    const payload = JSON.stringify({ ...obj, id });
+    client.publish(T.command, payload);
+    term('CMD', '📤 ' + payload, 'text-amber-300');
   });
 }
 
@@ -446,13 +494,16 @@ function timeAgo(iso) {
   return s < 90 ? 'vừa xong' : s < 3600 ? Math.round(s / 60) + ' phút trước' : Math.round(s / 3600) + ' giờ trước';
 }
 
+$('btn-clear-term').onclick = () => { $('term').innerHTML = ''; };
+
 (async function init() {
-  let cfg = FALLBACK;
+  // Hỏi /api/config tối đa 2.5 s (chỉ để đổi topic/HiveMQ Cloud qua env). Lỗi/chậm → dùng FALLBACK như bình thường.
+  let cfg = { ...FALLBACK };
   try {
-    const remote = await api('/api/config');
-    cfg = { ...FALLBACK, ...remote.mqtt };
+    const remote = await Promise.race([api('/api/config'), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 2500))]);
+    for (const [k, v] of Object.entries(remote.mqtt || {})) if (v) cfg[k] = v;
     if (!remote.database) badge('badge-db', false, 'Database: chưa kết nối Neon');
-  } catch { console.warn('Không có /api/config – dùng FALLBACK (đang mở file local?)'); }
+  } catch { term('SYSTEM', 'Không đọc được /api/config – dùng cấu hình MQTT viết sẵn', 'text-slate-500'); }
   connectMqtt(cfg);
   refreshDb();
   setInterval(refreshDb, CONFIG.DB_REFRESH_MS);

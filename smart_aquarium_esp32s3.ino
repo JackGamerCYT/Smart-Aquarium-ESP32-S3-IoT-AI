@@ -99,7 +99,7 @@ const int   MQTT_PORT    = 1883;
 const char* MQTT_USER    = "";                  // HiveMQ Cloud → Access Management → tài khoản "esp32"
 const char* MQTT_PASS    = "";
 // Đổi "nhomXX" thành mã nhóm – broker công cộng, topic trùng = người lạ điều khiển được bể!
-const char* TOPIC_BASE   = "hcmute/esd/beca-nhomXX";
+const char* TOPIC_BASE   = "smartaquarium_node2026";   // PHẢI trùng TOPIC trong index.html
 
 const char* TZ_INFO      = "ICT-7";            // Việt Nam UTC+7, không DST
 const char* NTP_1        = "pool.ntp.org";
@@ -720,7 +720,13 @@ void sendTelemetry() {
   d["db_ok"]      = dbOk;
   d["db_fail"]    = dbFail + dbDropped;
   String out; serializeJson(d, out);
-  mqtt.publish(topicTelemetry.c_str(), out.c_str());
+  bool ok = mqtt.publish(topicTelemetry.c_str(), out.c_str());
+  static unsigned long lastLog = 0;                 // in log mỗi 10 s cho đỡ rối Serial
+  if (!ok || millis() - lastLog >= 10000) {
+    lastLog = millis();
+    Serial.printf("[MQTT] %s %s  T=%s  So=%s  Bom=%s  (%u byte)\n", ok ? "SENT OK" : "SEND FAILED!", topicTelemetry.c_str(),
+                  sensorFault ? "ERR" : String(currentTemp, 1).c_str(), chillerOn ? "ON" : "OFF", pumpOn ? "ON" : "OFF", (unsigned)out.length());
+  }
 }
 
 void sendAck(const String &id, const String &device, bool ok, const String &msg) {
@@ -808,6 +814,7 @@ void handleConnectivity(unsigned long now) {
     const char* user = strlen(MQTT_USER) ? MQTT_USER : nullptr;
     const char* pass = strlen(MQTT_PASS) ? MQTT_PASS : nullptr;
     if (mqtt.connect(deviceId.c_str(), user, pass, topicStatus.c_str(), 1, true, "offline")) {
+      Serial.printf("[MQTT] Da ket noi %s:%d  topic=%s/*\n", MQTT_HOST, MQTT_PORT, TOPIC_BASE);
       mqtt.publish(topicStatus.c_str(), "online", true);
       mqtt.subscribe(topicCommand.c_str());
       publishEvent("boot", String("FW ") + FW_VERSION);

@@ -1,11 +1,15 @@
-# Docs
+# API (Vercel Functions)
 
-| File | Nội dung |
-|---|---|
-| `01_TONG_KET_KET_QUA_TUAN.md` | Kết quả W1–W6, minh chứng, vướng mắc |
-| `02_DAC_TA_HE_THONG.md` | Requirement analysis, FR/NFR, kiến trúc, interface, MQTT, state machine, traceability |
-| `03_LO_TRINH_TIEN_DO_PHAN_CONG.md` | Roadmap 9 tuần, bảng task W6, kế hoạch W7–W9, rủi ro, quản lý công việc cá nhân |
-| `04_PHAN_CUNG_REV2_RTC.md` | Lỗi mạch Rev1 & cách làm lại, pinout Rev2, đấu nối RTC DS3231, bring-up, test case RTC |
-| `05_WEB_DATABASE.md` | Kiến trúc Web ↔ Vercel API/Postgres ↔ ESP32 ↔ HiveMQ, luồng ACK, API, triển khai từng bước, lỗi thường gặp |
+| Endpoint | Method | Dùng bởi | Mô tả |
+|---|---|---|---|
+| `/api/ingest` | POST | ESP32 | Header `x-device-key`. Body `{"items":[{"t":"telemetry"\|"events","r":{...}}]}` (≤ 60) |
+| `/api/history?hours=24` | GET | Web | Nhiệt độ avg/min/max + % sò chạy theo bucket |
+| `/api/stats?hours=24` | GET | Web | KPI |
+| `/api/feeds?days=7` | GET | Web | Số lần cho ăn/ngày |
+| `/api/events?type=&limit=100` | GET | Web | Nhật ký |
+| `/api/export?hours=24` | GET | Web | CSV |
+| `/api/config` | GET | Web | MQTT URL, topic, tài khoản web (từ env) |
+| `/api/health` | GET | Người dùng | Kiểm tra env + DB |
+| `/api/cron/cleanup` | GET | Vercel Cron | Xóa dữ liệu cũ (`Authorization: Bearer CRON_SECRET`) |
 
-Sơ đồ `mermaid` hiển thị trực tiếp trên GitHub.
+Biến môi trường: xem `../.env.example`. Hướng dẫn: `../docs/05_WEB_DATABASE.md`.
