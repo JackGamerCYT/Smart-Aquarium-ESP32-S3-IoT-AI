@@ -1,10 +1,25 @@
 /*
  * ============================================================================
  *  SMART AQUARIUM IoT – ESP32-S3 DevKitC-1 (N8R8 / N16R8)
- *  Firmware v2.2.0 – Tuần 6: System Integration + RTC DS3231 + Vercel/Postgres + HiveMQ
+ *  Firmware v3.2.0 – RTC DS3231 + HiveMQ + backend Render ghi Postgres
+ * ============================================================================
+ *  v3.2 – ĐỔI MÀN HÌNH OLED -> LCD I2C (1602 hoặc 2004 + mạch PCF8574):
+ *   - Driver LCD viết sẵn trong file này -> KHÔNG cần cài thư viện LCD nào.
+ *   - Tự dò địa chỉ PCF8574 (0x27 / 0x3F và cả dải 0x20–0x27, 0x38–0x3F).
+ *   - Chọn 16x2 hoặc 20x4 lúc chạy (lưu NVS): gõ "lcd 1602" / "lcd 2004" ở Serial
+ *     hoặc bấm nút trên web, không cần nạp lại.
+ *   - LCD 16x2: tự lật 2–3 trang mỗi 3 s. LCD 20x4: hiện đủ trên 1 trang.
+ *   - Chỉ ghi lại dòng nào thay đổi -> không nhấp nháy, không làm chậm loop.
+ *   - Cắm lại LCD khi đang chạy: tự nhận lại sau ≤ 5 s. Lệnh "lcd test": tô kín ô.
+ *   - Giữ từ v3.1: quét bus I2C + đo điện dây SDA/SCL lúc khởi động, I2C 100 kHz,
+ *     sửa lỗi gói gửi bù bị mất nhiệt độ.
+ *
+ *  Thư viện (Library Manager): PubSubClient, ArduinoJson (v7), OneWire,
+ *  DallasTemperature, ESP32Servo, RTClib (Adafruit).
+ *  -> KHÔNG cần U8g2 / Adafruit GFX / LiquidCrystal_I2C.
  * ============================================================================
  *  Thay đổi chính so với v1:
- *   - Thêm RTC DS3231 (I2C chung bus với OLED) + đồng bộ NTP -> lịch cho ăn
+ *   - Thêm RTC DS3231 (I2C chung bus với LCD) + đồng bộ NTP -> lịch cho ăn
  *     vẫn chạy đúng giờ khi MẤT Wi-Fi / mất điện (pin CR2032 giữ giờ).
  *   - GIỮ NGUYÊN chân Relay/Còi như mạch cũ (GPIO19, GPIO18, GPIO12) vì đã chạy ổn.
  *   - Toàn bộ vòng lặp NON-BLOCKING: DS18B20 đọc bất đồng bộ, servo & còi
@@ -20,10 +35,7 @@
  *     bằng task FreeRTOS riêng trên core 0 + hàng đợi (không làm chậm loop);
  *     hỗ trợ HiveMQ public (1883) hoặc HiveMQ Cloud (TLS 8883 + user/pass).
  *
- *  Thư viện (Library Manager): PubSubClient, ArduinoJson (v7), OneWire,
- *  DallasTemperature, ESP32Servo, Adafruit GFX, Adafruit SH110X
- *  (hoặc Adafruit SSD1306), RTClib (Adafruit).
- *  Board: esp32 by Espressif >= 3.0  ->  "ESP32S3 Dev Module"
+ *  Board: esp32 by Espressif 2.0.x hoặc 3.x  ->  "ESP32S3 Dev Module"
  * ============================================================================
  */
 
@@ -33,7 +45,6 @@
 #include <DallasTemperature.h>
 #include <ESP32Servo.h>
 #include <Wire.h>
-#include <Adafruit_GFX.h>
 #include <ArduinoJson.h>
 #include <RTClib.h>
 #include <Preferences.h>
@@ -45,32 +56,13 @@
 #include <esp_system.h>
 
 // ============================================================================
-// 0. CHỌN DRIVER OLED
-//    OLED 1.3" hầu hết dùng chip SH1106 -> để 1. Nếu module ghi SSD1306 -> 0.
-//    (Dùng sai driver sẽ bị lệch 2 cột pixel / nhiễu ở mép màn hình.)
-// ============================================================================
-#define OLED_USE_SH1106 1
-
-#if OLED_USE_SH1106
-  #include <Adafruit_SH110X.h>
-  Adafruit_SH1106G display(128, 64, &Wire, -1);
-  #define OLED_WHITE SH110X_WHITE
-  #define OLED_BEGIN() display.begin(0x3C, true)
-#else
-  #include <Adafruit_SSD1306.h>
-  Adafruit_SSD1306 display(128, 64, &Wire, -1);
-  #define OLED_WHITE SSD1306_WHITE
-  #define OLED_BEGIN() display.begin(SSD1306_SWITCHCAPVCC, 0x3C)
-#endif
-
-// ============================================================================
 // 1. SƠ ĐỒ CHÂN – GIỮ NGUYÊN CHÂN MẠCH CŨ + thêm chân mới cho RTC/quạt/nút
 //    Lưu ý: GPIO19 trùng USB D- → nạp code qua cổng "UART/COM", không dùng cổng "USB" (OTG).
 //    Chân mới (7, 15, 16) không đụng chân cũ; không nối thì firmware vẫn chạy.
 // ============================================================================
 #define PIN_DS18B20        4    // 1-Wire. Có trở 4.7k lên 3V3 là tốt nhất
 #define DS18B20_INTERNAL_PULLUP 1   // 1 = bật trở kéo NỘI của ESP32 (dùng khi KHÔNG gắn trở 4.7k, dây ngắn ≤ 1 m)
-#define PIN_I2C_SDA        8    // OLED 0x3C + DS3231 0x68 (+ EEPROM 0x57)
+#define PIN_I2C_SDA        8    // LCD PCF8574 0x27/0x3F + DS3231 0x68 (+ EEPROM 0x57)
 #define PIN_I2C_SCL        9
 #define PIN_RTC_SQW        7    // (MỚI) DS3231 SQW – xung 1 Hz; không nối vẫn chạy
 #define PIN_RELAY_CHILLER  19   // IN1: Relay 1 -> Sò Peltier + quạt (như cũ)
@@ -86,9 +78,25 @@
 #define RELAY_OFF  HIGH
 
 // ============================================================================
+// 1b. LCD I2C (HD44780 + PCF8574) – 1602 hoặc 2004, chọn lúc chạy (NVS "lcdRows")
+//     Đấu dây: GND->GND · VCC->5V (LCD cần 5V mới đủ tương phản) · SDA->GPIO8 · SCL->GPIO9
+//     Có đèn nền mà KHÔNG thấy chữ -> vặn biến trở xanh sau lưng LCD (tương phản).
+// ============================================================================
+#define LCD_DEFAULT_ROWS 2          // 2 = LCD 1602 (16x2), 4 = LCD 2004 (20x4)
+uint8_t lcdAddr   = 0;
+uint8_t lcdRows   = LCD_DEFAULT_ROWS;
+uint8_t lcdCols   = 16;
+bool    lcdPresent   = false;
+bool    lcdBacklight = true;
+String  lcdShadow[4];               // nội dung đang hiện -> chỉ ghi dòng thay đổi
+String  i2cList    = "";            // vd "27,57,68"
+int     dsCount    = 0;             // số cảm biến DS18B20 tìm thấy
+unsigned long lastLcdProbeMs = 0;
+
+// ============================================================================
 // 2. CẤU HÌNH
 // ============================================================================
-const char* FW_VERSION   = "2.2.2";
+const char* FW_VERSION   = "3.2.0";
 const char* WIFI_SSID    = "HO TRO SINH VIEN"; // Wi-Fi 2.4 GHz
 const char* WIFI_PASS    = "12345678@";
 // ---- MQTT: chọn 1 trong 2 ----
@@ -106,8 +114,9 @@ const char* TZ_INFO      = "ICT-7";            // Việt Nam UTC+7, không DST
 const char* NTP_1        = "pool.ntp.org";
 const char* NTP_2        = "time.google.com";
 
-// ---- Database qua API Vercel (xem docs/05_WEB_DATABASE.md). DB_ENABLED=false để tắt ----
-const bool  DB_ENABLED        = true;
+// ---- Ghi database: KHÔNG cần nữa vì backend trên Render tự nghe MQTT và ghi Postgres.
+//      Chỉ bật khi muốn ESP32 tự POST HTTPS (kiến trúc cũ, không có backend).
+const bool  DB_ENABLED        = false;
 const char* API_BASE_URL      = "https://YOUR-APP.vercel.app";   // <--- domain PRODUCTION, không có "/" cuối
 const char* DEVICE_KEY        = "";                              // để trống = không dùng khóa (API mở)
 const unsigned long DB_TELEMETRY_PERIOD_MS = 60000;              // 1 bản ghi/phút
@@ -125,7 +134,7 @@ const float TEMP_VALID_MAX  = 50.0;
 const unsigned long SENSOR_PERIOD_MS     = 1000;
 const unsigned long DS18B20_CONV_MS      = 400;       // 11-bit = 375 ms
 const unsigned long TELEMETRY_PERIOD_MS  = 2000;
-const unsigned long OLED_PERIOD_MS       = 500;
+const unsigned long LCD_PERIOD_MS        = 500;
 const unsigned long CHILLER_MIN_OFF_MS   = 60000UL;   // chống đóng/ngắt relay liên tục
 const unsigned long FAN_POSTRUN_MS       = 60000UL;   // quạt chạy thêm sau khi tắt sò
 const unsigned long MANUAL_TIMEOUT_MS    = 30UL * 60 * 1000; // MANUAL tự về AUTO
@@ -177,9 +186,21 @@ AlarmCode alarmCode = ALM_NONE, lastAlarm = ALM_NONE;
 bool alarmMuted = false;
 unsigned long lastAlarmBeepMs = 0;
 
+// Đo đạc / an toàn khi mất mạng
+uint32_t telemetrySeq = 0;              // số thứ tự gói → web tính tỉ lệ mất gói
+bool safeMode = false;                  // mất broker > 30 s: tự quản lý cục bộ
+unsigned long mqttLostAtMs = 0;
+uint32_t bufferedSent = 0;
+
+// Bộ đệm khi mất mạng: 1 bản ghi/phút, giữ 240 phút gần nhất
+struct BufRec { uint32_t t; float temp; uint8_t flags; uint8_t feedToday; };
+const int  BUF_MAX = 240;
+BufRec  buf[BUF_MAX];
+int     bufHead = 0, bufCount = 0;
+unsigned long lastBufMs = 0;
+
 // Thời gian
 bool rtcPresent = false;
-bool oledPresent = false;
 bool dbActive = false;          // DB chỉ chạy khi DB_ENABLED và API_BASE_URL đã sửa
 bool timeValid  = false;
 enum TimeSrc { SRC_NONE, SRC_RTC, SRC_NTP, SRC_WEB };
@@ -210,7 +231,7 @@ String feedSource = "";
 int  buzzRemain = 0; unsigned long buzzOnMs = 0, buzzOffMs = 0, buzzNextMs = 0; bool buzzState = false;
 
 // Kết nối / chu kỳ
-unsigned long lastWifiTryMs = 0, lastMqttTryMs = 0, lastTelemetryMs = 0, lastOledMs = 0;
+unsigned long lastWifiTryMs = 0, lastMqttTryMs = 0, lastTelemetryMs = 0, lastLcdMs = 0;
 bool selfTestRequested = false;
 
 // Nút nhấn
@@ -456,6 +477,8 @@ void loadSettings() {
   feedDayKey    = prefs.getUInt("feedDay", 0);
   feedToday     = prefs.getUShort("feedTod", 0);
   feedTotal     = prefs.getUInt("feedTot", 0);
+  lcdRows       = prefs.getUChar("lcdRows", LCD_DEFAULT_ROWS) == 4 ? 4 : 2;
+  lcdCols       = lcdRows == 4 ? 20 : 16;
 }
 
 void saveFeedCounters() {
@@ -475,12 +498,25 @@ void applyOutputs(unsigned long now) {
   digitalWrite(PIN_RELAY_CHILLER, chillerOn ? RELAY_ON : RELAY_OFF);
   digitalWrite(PIN_RELAY_PUMP,    pumpOn    ? RELAY_ON : RELAY_OFF);
   digitalWrite(PIN_FAN_MOSFET,    fanOn     ? HIGH : LOW);
+  static int lastC = -1, lastP = -1;               // in ra Serial mỗi khi relay đổi trạng thái
+  if (lastC != chillerOn || lastP != pumpOn) {
+    lastC = chillerOn; lastP = pumpOn;
+    Serial.printf("[RELAY] IN1 So lanh (GPIO%d) = %s | IN2 Bom (GPIO%d) = %s\n",
+                  PIN_RELAY_CHILLER, chillerOn ? "ON (LOW)" : "OFF (HIGH)", PIN_RELAY_PUMP, pumpOn ? "ON (LOW)" : "OFF (HIGH)");
+  }
 }
 
 void setChiller(bool on, unsigned long now, const char* reason) {
   if (on == chillerOn) return;
-  if (on && !pumpWanted) return;                                         // khóa liên động
-  if (on && chillerOffAtMs != 0 && now - chillerOffAtMs < CHILLER_MIN_OFF_MS) return;
+  static unsigned long lastWhy = 0;
+  if (on && !pumpWanted) {                                               // khóa liên động
+    if (now - lastWhy > 5000) { lastWhy = now; Serial.println("[RELAY] Khong bat so: BOM dang OFF"); }
+    return;
+  }
+  if (on && chillerOffAtMs != 0 && now - chillerOffAtMs < CHILLER_MIN_OFF_MS) {
+    if (now - lastWhy > 5000) { lastWhy = now; Serial.printf("[RELAY] Khong bat so: cho nghi them %lus\n", (CHILLER_MIN_OFF_MS - (now - chillerOffAtMs)) / 1000); }
+    return;
+  }
   chillerOn = on;
   if (!on) chillerOffAtMs = now;
   applyOutputs(now);
@@ -514,7 +550,27 @@ void controlTemperature(unsigned long now) {
 // ============================================================================
 // 8. ĐỌC DS18B20 BẤT ĐỒNG BỘ
 // ============================================================================
+/** Mất cảm biến: mỗi 10 s dò lại bus 1-Wire (cắm lại dây là tự nhận, không cần reset). */
+void retryDs18b20(unsigned long now) {
+  static unsigned long lastRetry = 0;
+  if (!sensorFault || now - lastRetry < 10000) return;
+  lastRetry = now;
+#if DS18B20_INTERNAL_PULLUP
+  pinMode(PIN_DS18B20, INPUT_PULLUP);
+#endif
+  ds18b20.begin();
+#if DS18B20_INTERNAL_PULLUP
+  pinMode(PIN_DS18B20, INPUT_PULLUP);
+#endif
+  ds18b20.setResolution(11);
+  ds18b20.setWaitForConversion(false);
+  dsCount = ds18b20.getDeviceCount();
+  Serial.printf("[DS18B20] Mat cam bien -> do lai GPIO%d: %d cam bien%s\n", PIN_DS18B20, dsCount,
+                dsCount ? "" : " (kiem tra day VANG->GPIO4, DO->3V3, DEN->GND, tro 4.7k VANG-DO)");
+}
+
 void updateSensor(unsigned long now) {
+  retryDs18b20(now);
   if (!convPending && now - lastSensorMs >= SENSOR_PERIOD_MS) {
     ds18b20.requestTemperatures();          // không chờ (setWaitForConversion(false))
     convPending = true; convStartMs = now; lastSensorMs = now;
@@ -616,42 +672,212 @@ String nextFeedString() {
 }
 
 // ============================================================================
-// 10. OLED
+// 10. LCD I2C + CHẨN ĐOÁN I2C
 // ============================================================================
-void renderOLED() {
-  display.clearDisplay();
-  display.setTextColor(OLED_WHITE);
-  display.setTextSize(1);
+bool i2cProbe(uint8_t a) { Wire.beginTransmission(a); return Wire.endTransmission() == 0; }
 
-  display.setCursor(0, 0);  display.print(fmtTime(false));
-  display.setCursor(62, 0);
-  display.print(WiFi.status() == WL_CONNECTED ? "W+" : "W-");
-  display.print(mqtt.connected() ? " M+" : " M-");
-  display.print(rtcPresent ? " R+" : " R-");
-  display.drawLine(0, 9, 127, 9, OLED_WHITE);
+/** Gọi TRƯỚC Wire.begin(): kéo xuống yếu (~45k) mà vẫn đọc HIGH => có trở kéo lên của module
+ *  => module có nguồn và dây đã cắm đúng vào chân này. */
+bool i2cLineHasPullup(int pin) {
+  pinMode(pin, INPUT_PULLDOWN);
+  delay(5);
+  int hi = 0;
+  for (int i = 0; i < 10; i++) { hi += digitalRead(pin); delayMicroseconds(200); }
+  pinMode(pin, INPUT);
+  return hi >= 9;
+}
 
-  display.setCursor(0, 13);
-  if (sensorFault) { display.setTextSize(2); display.print("ERR"); }
-  else { display.setTextSize(2); display.print(currentTemp, 1);
-         display.setTextSize(1); display.write(247); display.print("C"); }
+String i2cScan() {
+  String s; int n = 0;
+  for (uint8_t a = 1; a < 127; a++) {
+    if (!i2cProbe(a)) continue;
+    char b[6]; snprintf(b, sizeof(b), "%s%02X", n++ ? "," : "", a);
+    s += b;
+  }
+  return s;
+}
 
-  display.setTextSize(1);
-  display.setCursor(86, 13); display.print(autoMode ? "AUTO" : "MANU");
-  display.setCursor(86, 23); display.print(chillerOn ? "LANH:ON" : "LANH:--");
+bool isLcdAddr(uint8_t a) { return (a >= 0x20 && a <= 0x27) || (a >= 0x38 && a <= 0x3F); }
 
-  display.setCursor(0, 33);
-  if (alarmCode != ALM_NONE) { display.print("! "); display.print(alarmName(alarmCode)); }
-  else if (feedState != FEED_IDLE) display.print("Dang cho ca an...");
-  else { display.print("Cho an ke: "); display.print(nextFeedString()); }
+void printI2cReport() {
+  Serial.printf("[I2C] SDA=GPIO%d SCL=GPIO%d -> thiet bi: %s\n", PIN_I2C_SDA, PIN_I2C_SCL,
+                i2cList.length() ? i2cList.c_str() : "KHONG CO");
+  if (!i2cList.length()) {
+    Serial.println("[I2C] Khong thay thiet bi nao -> loi DAY, khong phai loi code:");
+    Serial.println("      - LCD: VCC->5V, GND chung ESP32 | RTC: VCC->3V3");
+    Serial.println("      - SDA -> GPIO8, SCL -> GPIO9 (hay bi DAO nguoc 2 day nay)");
+    return;
+  }
+  bool lcd = false;
+  for (uint8_t a = 0x20; a <= 0x3F; a++) {
+    if (!isLcdAddr(a)) continue;
+    char h[3]; snprintf(h, sizeof(h), "%02X", a);
+    if (i2cList.indexOf(h) >= 0) lcd = true;
+  }
+  Serial.printf("      LCD(27/3F): %s | DS3231(68): %s | EEPROM(57): %s\n", lcd ? "CO" : "KHONG",
+                i2cList.indexOf("68") >= 0 ? "CO" : "KHONG", i2cList.indexOf("57") >= 0 ? "CO" : "KHONG");
+}
 
-  display.drawLine(0, 43, 127, 43, OLED_WHITE);
-  display.setCursor(0, 46);
-  display.print("Bom:"); display.print(pumpOn ? "ON " : "OFF");
-  display.print(" Quat:"); display.print(fanOn ? "ON" : "OFF");
-  display.setCursor(0, 56);
-  display.print("An:"); display.print(feedToday); display.print("/ngay ");
-  display.print(srcName(timeSrc));
-  display.display();
+// ---- Driver HD44780 qua PCF8574: P0=RS P1=RW P2=EN P3=đèn nền P4..P7=D4..D7 ----
+#define LCD_RS 0x01
+#define LCD_EN 0x04
+#define LCD_BL 0x08
+
+void lcdNibble(uint8_t hiNibble, uint8_t mode) {       // 3 byte/1 lần truyền: data -> EN=1 -> EN=0
+  uint8_t v = (hiNibble & 0xF0) | mode | (lcdBacklight ? LCD_BL : 0);
+  Wire.beginTransmission(lcdAddr);
+  Wire.write(v); Wire.write(v | LCD_EN); Wire.write(v);
+  Wire.endTransmission();
+}
+void lcdSend(uint8_t b, uint8_t mode) { lcdNibble(b & 0xF0, mode); lcdNibble((b << 4) & 0xF0, mode); delayMicroseconds(40); }
+void lcdCmd(uint8_t c)  { lcdSend(c, 0); if (c <= 0x03) delay(2); }       // clear/home cần ~1.6 ms
+
+uint8_t lcdFindAddr() {
+  const uint8_t pref[] = { 0x27, 0x3F };                // 2 địa chỉ hay gặp nhất
+  for (uint8_t a : pref) if (i2cProbe(a)) return a;
+  for (uint8_t a = 0x20; a <= 0x3F; a++) if (isLcdAddr(a) && i2cProbe(a)) return a;
+  return 0;
+}
+
+const char* lcdSizeName() { return lcdRows == 4 ? "2004" : "1602"; }
+
+String lcdStatus() {
+  if (!lcdPresent) return "NONE";
+  char b[20]; snprintf(b, sizeof(b), "LCD%s@0x%02X", lcdSizeName(), lcdAddr);
+  return String(b);
+}
+
+/** Dò địa chỉ PCF8574 rồi khởi tạo HD44780 ở chế độ 4-bit. Gọi lại được bất kỳ lúc nào. */
+bool lcdInit() {
+  lcdAddr = lcdFindAddr();
+  if (!lcdAddr) { lcdPresent = false; return false; }
+  lcdCols = lcdRows == 4 ? 20 : 16;
+  Wire.beginTransmission(lcdAddr); Wire.write(lcdBacklight ? LCD_BL : 0); Wire.endTransmission();
+  delay(50);                                            // LCD cần >40 ms sau khi có nguồn
+  lcdNibble(0x30, 0); delay(5);                         // trình tự reset chuẩn HD44780
+  lcdNibble(0x30, 0); delayMicroseconds(150);
+  lcdNibble(0x30, 0); delayMicroseconds(150);
+  lcdNibble(0x20, 0); delayMicroseconds(150);           // vào chế độ 4-bit
+  lcdCmd(0x28);                                         // 4-bit, 2 dòng logic (2004 cũng dùng), font 5x8
+  lcdCmd(0x0C);                                         // bật hiển thị, tắt con trỏ
+  lcdCmd(0x06);                                         // tự tăng địa chỉ
+  lcdCmd(0x01);                                         // xóa màn
+  for (auto &r : lcdShadow) r = "";
+  lcdPresent = true;
+  return true;
+}
+
+/** Ghi 1 dòng (tự cắt / đệm khoảng trắng). Chỉ gửi I2C khi nội dung khác lần trước. */
+void lcdRow(uint8_t row, const String &text) {
+  if (!lcdPresent || row >= lcdRows) return;
+  String t = text.substring(0, lcdCols);
+  while ((int)t.length() < lcdCols) t += ' ';
+  if (t == lcdShadow[row]) return;
+  const uint8_t base[4] = { 0x00, 0x40, 0x14, 0x54 };  // địa chỉ DDRAM đầu mỗi dòng
+  lcdCmd(0x80 | base[row]);
+  for (int i = 0; i < lcdCols; i++) lcdSend((uint8_t)t[i], LCD_RS);
+  lcdShadow[row] = t;
+}
+
+void lcdSplash(const String &l1, const String &l2) {
+  if (!lcdPresent) return;
+  for (uint8_t r = 0; r < lcdRows; r++) lcdRow(r, r == 0 ? l1 : r == 1 ? l2 : String(""));
+}
+
+/** Tô kín mọi ô 1.5 s rồi hiện thông tin – kiểm tra màn + biến trở tương phản. */
+void lcdTestPattern() {
+  if (!lcdPresent) { Serial.println("[LCD] Khong co LCD tren bus -> kiem tra day"); return; }
+  String full; for (int i = 0; i < lcdCols; i++) full += (char)0xFF;   // 0xFF = ô tô đen
+  for (uint8_t r = 0; r < lcdRows; r++) lcdRow(r, full);
+  delay(1500);
+  char ad[16]; snprintf(ad, sizeof(ad), "Dia chi 0x%02X", lcdAddr);
+  lcdSplash("LCD OK " + String(lcdSizeName()), ad);
+  if (lcdRows == 4) { lcdRow(2, "Mo chu? vat bien tro"); lcdRow(3, "xanh sau lung LCD"); }
+  delay(2000);
+  Serial.printf("[LCD] Test xong: %s. Chi thay o den/khong thay chu -> vat bien tro tuong phan\n", lcdStatus().c_str());
+}
+
+void setLcdSize(uint8_t rows) {
+  lcdRows = rows == 4 ? 4 : 2;
+  prefs.putUChar("lcdRows", lcdRows);
+  if (lcdInit()) lcdTestPattern();
+  Serial.printf("[LCD] Kich thuoc = %s (da luu, khoi dong lai van giu)\n", lcdSizeName());
+  publishEvent("lcd", String("Kich thuoc ") + lcdSizeName() + " -> " + lcdStatus());
+}
+
+/** Cắm/rút LCD lúc đang chạy: kiểm tra mỗi 5 s. */
+void handleLcdHotplug(unsigned long now) {
+  if (now - lastLcdProbeMs < 5000) return;
+  lastLcdProbeMs = now;
+  if (lcdPresent) {
+    if (!i2cProbe(lcdAddr)) {
+      lcdPresent = false;
+      Serial.println("[LCD] Mat ket noi LCD -> kiem tra day SDA/SCL/VCC");
+      publishEvent("alarm", "LCD mat ket noi I2C");
+    }
+  } else if (lcdFindAddr()) {
+    if (lcdInit()) {
+      i2cList = i2cScan();
+      Serial.printf("[LCD] Da nhan LCD: %s\n", lcdStatus().c_str());
+      publishEvent("info", String("LCD ket noi: ") + lcdStatus());
+    }
+  }
+}
+
+String tempText() {                                     // "26.5°C" hoặc "ERR   "
+  if (sensorFault) return "ERR";
+  char b[10]; snprintf(b, sizeof(b), "%.1f%cC", currentTemp, (char)0xDF);   // 0xDF = dấu độ trong ROM LCD
+  return String(b);
+}
+const char* modeText() { return safeMode ? "SAFE" : (autoMode ? "AUTO" : "MANU"); }
+
+void renderLCD(unsigned long now) {
+  char b[24];
+  String flags = String(WiFi.status() == WL_CONNECTED ? "W+" : "W-") + (mqtt.connected() ? "M+" : "M-") + (rtcPresent ? "R+" : "R-");
+
+  if (lcdRows == 4) {                                   // ---- LCD 2004: 1 trang đủ thông tin ----
+    lcdRow(0, fmtTime(false) + "  " + flags);
+    lcdRow(1, "Nuoc: " + tempText() + "  " + modeText());
+    snprintf(b, sizeof(b), "Lanh:%s Bom:%s Q:%s", chillerOn ? "ON" : "--", pumpOn ? "ON" : "--", fanOn ? "ON" : "--");
+    lcdRow(2, b);
+    if (alarmCode != ALM_NONE)       lcdRow(3, String("! ") + alarmName(alarmCode));
+    else if (feedState != FEED_IDLE) lcdRow(3, "Dang cho ca an...");
+    else { snprintf(b, sizeof(b), "An:%u Ke:%s %s", (unsigned)feedToday, nextFeedString().c_str(), srcName(timeSrc)); lcdRow(3, b); }
+    return;
+  }
+
+  // ---- LCD 1602: lật trang mỗi 3 s; có cảnh báo / đang cho ăn thì thêm trang 3 ----
+  static uint8_t page = 0;
+  static unsigned long pageMs = 0;
+  bool special = alarmCode != ALM_NONE || feedState != FEED_IDLE;
+  uint8_t pages = special ? 3 : 2;
+  if (now - pageMs >= 3000) { pageMs = now; page = (page + 1) % pages; }
+  if (page >= pages) page = 0;
+
+  if (page == 0) {
+    lcdRow(0, fmtTime(false) + " " + flags);
+    lcdRow(1, "Nuoc " + tempText() + " " + modeText());
+  } else if (page == 1) {
+    snprintf(b, sizeof(b), "LANH:%s  BOM:%s", chillerOn ? "ON" : "--", pumpOn ? "ON" : "--");
+    lcdRow(0, b);
+    snprintf(b, sizeof(b), "An %u/ng Ke %s", (unsigned)feedToday, nextFeedString().c_str());
+    lcdRow(1, b);
+  } else {
+    if (alarmCode != ALM_NONE) { lcdRow(0, "!! CANH BAO !!"); lcdRow(1, alarmName(alarmCode)); }
+    else                       { lcdRow(0, "DANG CHO CA AN"); lcdRow(1, "Bom tam dung..."); }
+  }
+}
+
+// Dòng chữ cho màn Self-Test: dòng 1 = tiêu đề, các dòng dưới cuộn kết quả mới nhất
+String stBuf[3];
+void stPrint(const String &s) {
+  Serial.print("  "); Serial.println(s.c_str());
+  if (!lcdPresent) return;
+  int n = lcdRows - 1;                                  // số dòng dành cho kết quả
+  for (int i = 0; i < n - 1; i++) stBuf[i] = stBuf[i + 1];
+  stBuf[n - 1] = s;
+  lcdRow(0, "=== SELF-TEST ===");
+  for (int i = 0; i < n; i++) lcdRow(i + 1, stBuf[i]);
 }
 
 // ============================================================================
@@ -661,38 +887,81 @@ void runSelfTest() {
   Serial.println("\n[SELF-TEST] Bat dau");
   bool okTemp, okRtc;
   bool prevChiller = chillerOn;
-  display.clearDisplay(); display.setTextSize(1); display.setTextColor(OLED_WHITE);
-  display.setCursor(18, 0); display.println("=== SELF-TEST ==="); display.display();
+  for (auto &x : stBuf) x = "";
+  stPrint("Bat dau...");
 
   digitalWrite(PIN_BUZZER, HIGH); delay(100); digitalWrite(PIN_BUZZER, LOW);
-  display.println("1.Coi          OK"); display.display(); delay(300);
+  stPrint("1.Coi          OK"); delay(300);
 
   digitalWrite(PIN_RELAY_CHILLER, RELAY_ON); delay(800); digitalWrite(PIN_RELAY_CHILLER, RELAY_OFF);
-  display.println("2.Relay Chiller"); display.display(); delay(300);
+  stPrint("2.Relay so lanh IN1"); delay(300);
 
   digitalWrite(PIN_RELAY_PUMP, RELAY_OFF); delay(800); digitalWrite(PIN_RELAY_PUMP, RELAY_ON);
   digitalWrite(PIN_FAN_MOSFET, HIGH); delay(800); digitalWrite(PIN_FAN_MOSFET, LOW);
-  display.println("3.Bom + Quat"); display.display();
+  stPrint("3.Bom IN2 + Quat");
 
   feedServo.attach(PIN_SERVO_FEED, 500, 2400);
   for (int p = 0; p <= SERVO_OPEN_DEG; p += 5) { feedServo.write(p); delay(20); }
   delay(300);
   for (int p = SERVO_OPEN_DEG; p >= 0; p -= 5) { feedServo.write(p); delay(20); }
   delay(200); feedServo.detach();
-  display.println("4.Servo MG90S"); display.display();
+  stPrint("4.Servo MG90S");
 
   ds18b20.setWaitForConversion(true); ds18b20.requestTemperatures();
   float t = ds18b20.getTempCByIndex(0); ds18b20.setWaitForConversion(false);
   okTemp = !(t == DEVICE_DISCONNECTED_C || t == 85.0f);
-  display.print("5.DS18B20 "); display.println(okTemp ? String(t, 1) + "C" : String("FAIL")); display.display();
+  stPrint(String("5.DS18B20 ") + (okTemp ? String(t, 1) + "C" : String("FAIL")));
 
   okRtc = rtcPresent && !rtc.lostPower();
-  display.print("6.RTC "); display.println(okRtc ? fmtTime(false) : String("FAIL")); display.display();
+  stPrint(String("6.RTC ") + (okRtc ? fmtTime(false) : String("FAIL")));
+
+  i2cList = i2cScan();
+  stPrint(String("7.I2C ") + (i2cList.length() ? i2cList : String("TRONG")));
 
   beep(okTemp && okRtc ? 2 : 4);
   chillerOn = prevChiller; applyOutputs(millis());
-  publishEvent("self_test", String("DS18B20=") + (okTemp ? "PASS" : "FAIL") + " RTC=" + (okRtc ? "PASS" : "FAIL"));
+  publishEvent("self_test", String("DS18B20=") + (okTemp ? "PASS" : "FAIL") + " RTC=" + (okRtc ? "PASS" : "FAIL")
+               + " LCD=" + lcdStatus() + " I2C=" + i2cList);
   delay(2000);
+}
+
+// ============================================================================
+// 11b. ĐỆM DỮ LIỆU KHI MẤT MẠNG + GỬI BÙ
+// ============================================================================
+void bufferPush(unsigned long now) {
+  if (!timeValid) return;
+  if (now - lastBufMs < 60000) return;                 // 1 bản ghi/phút
+  lastBufMs = now;
+  BufRec r;
+  r.t = (uint32_t)time(nullptr);
+  r.temp = sensorFault ? NAN : currentTemp;
+  r.flags = (chillerOn ? 1 : 0) | (pumpOn ? 2 : 0) | (fanOn ? 4 : 0) | (autoMode ? 8 : 0) | (alarmCode != ALM_NONE ? 16 : 0);
+  r.feedToday = (uint8_t)min<int>(feedToday, 255);
+  buf[bufHead] = r;
+  bufHead = (bufHead + 1) % BUF_MAX;
+  if (bufCount < BUF_MAX) bufCount++;
+}
+
+/** Gửi bù tối đa 5 bản ghi mỗi lần gọi; gói bù có cờ "buffered": true. */
+void bufferFlush() {
+  int sent = 0;
+  while (bufCount > 0 && sent < 5 && mqtt.connected()) {
+    int idx = (bufHead - bufCount + BUF_MAX) % BUF_MAX;
+    BufRec &r = buf[idx];
+    JsonDocument d;
+    d["dev"] = deviceId; d["seq"] = ++telemetrySeq; d["buffered"] = true;
+    d["ts"] = (double)r.t * 1000.0;
+    if (r.temp != r.temp) d["temp"] = nullptr;          // NaN = loi cam bien
+    else d["temp"] = round(r.temp * 10) / 10.0;
+    d["chiller"] = (bool)(r.flags & 1); d["pump"] = (bool)(r.flags & 2); d["fan"] = (bool)(r.flags & 4);
+    d["mode"] = (r.flags & 8) ? "AUTO" : "MANUAL";
+    d["alarm"] = (r.flags & 16) ? "ALARM" : "NONE";
+    d["feed_today"] = r.feedToday;
+    String out; serializeJson(d, out);
+    if (!mqtt.publish(topicTelemetry.c_str(), out.c_str())) break;
+    bufCount--; sent++; bufferedSent++;
+  }
+  if (sent) Serial.printf("[BUF] Da gui bu %d ban ghi, con %d\n", sent, bufCount);
 }
 
 // ============================================================================
@@ -700,6 +969,12 @@ void runSelfTest() {
 // ============================================================================
 void sendTelemetry() {
   JsonDocument d;
+  d["dev"]        = deviceId;
+  d["seq"]        = ++telemetrySeq;
+  if (timeValid) d["ts"] = (double)time(nullptr) * 1000.0;      // epoch ms → backend/web tính độ trễ
+  d["safe_mode"]  = safeMode;
+  d["buffered"]   = false;
+  d["buf_count"]  = bufCount;
   if (sensorFault) d["temp"] = nullptr; else d["temp"] = round(currentTemp * 10) / 10.0;
   d["chiller"]    = chillerOn;
   d["pump"]       = pumpOn;
@@ -722,6 +997,10 @@ void sendTelemetry() {
   d["fw"]         = FW_VERSION;
   d["db_ok"]      = dbOk;
   d["db_fail"]    = dbFail + dbDropped;
+  d["lcd"]        = lcdStatus();           // "LCD1602@0x27" | "NONE"
+  d["lcd_size"]   = lcdSizeName();
+  d["i2c"]        = i2cList;               // thiết bị trên bus I2C
+  d["ds_count"]   = dsCount;
   String out; serializeJson(d, out);
   bool ok = mqtt.publish(topicTelemetry.c_str(), out.c_str());
   static unsigned long lastLog = 0;                 // in log mỗi 10 s cho đỡ rối Serial
@@ -751,6 +1030,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
   Serial.printf("[MQTT] id=%s device=%s action=%s\n", id.c_str(), device.c_str(), action.c_str());
 
   if (device == "chiller") {
+    if (autoMode) publishEvent("manual_override", String("Web bat tay so lanh -> MANUAL (") + action + ")");
     autoMode = false; manualSinceMs = now; manualChillerReq = (action == "ON");
     setChiller(manualChillerReq, now, "WEB");
     if (manualChillerReq && !chillerOn) {
@@ -793,6 +1073,22 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
       writeRtcFromSystem(); publishEvent("time_sync", String("WEB -> RTC ") + fmtTime(true));
       msg = "Da dat gio " + fmtTime(true);
     } else { ok = false; msg = "Epoch khong hop le"; }
+  } else if (device == "lcd") {                      // chẩn đoán màn hình từ web
+    if (action == "1602" || action == "2004") {
+      setLcdSize(action == "2004" ? 4 : 2);
+      msg = String("Da doi -> ") + lcdStatus();
+    } else if (action == "TEST") {
+      lcdTestPattern(); ok = lcdPresent;
+      msg = lcdPresent ? "To kin o 1.5 s: " + lcdStatus() : String("Khong thay LCD tren I2C");
+    } else if (action == "SCAN") {
+      i2cList = i2cScan(); printI2cReport();
+      if (!lcdPresent) lcdInit();
+      msg = "I2C: " + (i2cList.length() ? i2cList : String("khong co thiet bi")) + " | " + lcdStatus();
+    } else if (action == "BL_ON" || action == "BL_OFF") {
+      lcdBacklight = (action == "BL_ON");
+      if (lcdPresent) { Wire.beginTransmission(lcdAddr); Wire.write(lcdBacklight ? LCD_BL : 0); Wire.endTransmission(); }
+      msg = lcdBacklight ? "Den nen: BAT" : "Den nen: TAT";
+    } else { ok = false; msg = "action: 1602 | 2004 | TEST | SCAN | BL_ON | BL_OFF"; }
   } else if (device == "alarm" && action == "MUTE") {
     alarmMuted = true; msg = "Da tat coi";
   } else {
@@ -822,7 +1118,14 @@ void handleConnectivity(unsigned long now) {
   if (!wifiWasUp) { wifiWasUp = true; Serial.printf("[WIFI] Da ket noi, IP %s, RSSI %d dBm\n", WiFi.localIP().toString().c_str(), WiFi.RSSI()); }
   static bool mqttWasUp = false;
   if (!mqtt.connected()) {
-    if (mqttWasUp) { mqttWasUp = false; Serial.printf("[MQTT] Mat ket noi broker (state=%d) -> web se bao OFFLINE\n", mqtt.state()); }
+    if (mqttWasUp) {
+      mqttWasUp = false; mqttLostAtMs = now;
+      Serial.printf("[MQTT] Mat ket noi broker (state=%d) -> web se bao OFFLINE\n", mqtt.state());
+    }
+    if (!safeMode && mqttLostAtMs && now - mqttLostAtMs > 30000) {   // mất broker > 30 s
+      safeMode = true; autoMode = true;                              // tự điều khiển cục bộ
+      Serial.println("[SAFE] Mat broker > 30 s -> SAFE MODE, tu dieu khien cuc bo (AUTO)");
+    }
     if (now - lastMqttTryMs < MQTT_RETRY_MS) return;
     lastMqttTryMs = now;
     const char* user = strlen(MQTT_USER) ? MQTT_USER : nullptr;
@@ -830,6 +1133,11 @@ void handleConnectivity(unsigned long now) {
     if (mqtt.connect(deviceId.c_str(), user, pass, topicStatus.c_str(), 1, true, "offline")) {
       Serial.printf("[MQTT] Da ket noi %s:%d  topic=%s/*\n", MQTT_HOST, MQTT_PORT, TOPIC_BASE);
       mqttWasUp = true;
+      if (safeMode || mqttLostAtMs) {
+        unsigned long downSec = mqttLostAtMs ? (now - mqttLostAtMs) / 1000 : 0;
+        publishEvent("recovered", String("Mat ket noi ") + downSec + " s, dem " + bufCount + " ban ghi cho gui bu");
+        safeMode = false; mqttLostAtMs = 0;
+      }
       mqtt.publish(topicStatus.c_str(), "online", true);
       mqtt.subscribe(topicCommand.c_str());
       publishEvent("boot", String("FW ") + FW_VERSION);
@@ -868,6 +1176,50 @@ void handleAlarm(unsigned long now) {
 }
 
 // ============================================================================
+// 13b. LỆNH QUA SERIAL MONITOR – test relay KHÔNG cần web/MQTT
+//      Gõ vào ô Serial (Newline): so on | so off | bom on | bom off | an | auto | test | status
+//                                 lcd test | lcd 1602 | lcd 2004 | i2c
+// ============================================================================
+void handleSerialCommand(unsigned long now) {
+  if (!Serial.available()) return;
+  String c = Serial.readStringUntil('\n');
+  c.trim(); c.toLowerCase();
+  if (c.length() == 0) return;
+  Serial.printf("[CMD SERIAL] %s\n", c.c_str());
+  if (c == "so on" || c == "so off") {
+    autoMode = false; manualSinceMs = now; manualChillerReq = (c == "so on");
+    setChiller(manualChillerReq, now, "SERIAL");
+  } else if (c == "bom on" || c == "bom off") {
+    pumpWanted = (c == "bom on");
+    if (feedState == FEED_IDLE) pumpOn = pumpWanted;
+    if (!pumpWanted) setChiller(false, now, "bom tat");
+    applyOutputs(now);
+  } else if (c == "an") {
+    startFeeding("SERIAL");
+  } else if (c == "auto") {
+    autoMode = true; Serial.println("  -> AUTO");
+  } else if (c == "test") {
+    selfTestRequested = true;
+  } else if (c == "lcd 1602" || c == "lcd 2004") {
+    setLcdSize(c == "lcd 2004" ? 4 : 2);
+  } else if (c == "lcd test" || c == "lcd") {
+    lcdTestPattern();
+  } else if (c == "i2c") {
+    i2cList = i2cScan(); printI2cReport();
+    if (!lcdPresent && lcdInit()) Serial.printf("[LCD] Da nhan: %s\n", lcdStatus().c_str());
+  } else if (c == "status") {
+    Serial.printf("  mode=%s so=%s bom=%s quat=%s sensor=%s T=%.1f WiFi=%s MQTT=%s\n", autoMode ? "AUTO" : "MANUAL",
+                  chillerOn ? "ON" : "OFF", pumpOn ? "ON" : "OFF", fanOn ? "ON" : "OFF", sensorFault ? "LOI" : "OK",
+                  currentTemp, WiFi.status() == WL_CONNECTED ? "OK" : "CHUA", mqtt.connected() ? "OK" : "CHUA");
+    Serial.printf("  LCD=%s  RTC=%s  DS18B20=%d cai  I2C=%s\n", lcdStatus().c_str(), rtcPresent ? "OK" : "KHONG",
+                  dsCount, i2cList.length() ? i2cList.c_str() : "trong");
+  } else {
+    Serial.println("  Lenh: so on | so off | bom on | bom off | an | auto | test | status");
+    Serial.println("        lcd test | lcd 1602 | lcd 2004 | i2c");
+  }
+}
+
+// ============================================================================
 // 14. SETUP & LOOP
 // ============================================================================
 void setup() {
@@ -884,6 +1236,7 @@ void setup() {
   Serial.begin(115200);
   delay(200);
   Serial.printf("\n=== SMART AQUARIUM FW %s ===\n", FW_VERSION);
+  Serial.println("Go lenh: so on | so off | bom on | bom off | an | auto | status | lcd test | lcd 1602 | lcd 2004 | i2c");
   {
     esp_reset_reason_t rr = esp_reset_reason();
     const char* why = rr == ESP_RST_POWERON ? "Bat nguon" : rr == ESP_RST_SW ? "Reset mem" :
@@ -893,18 +1246,28 @@ void setup() {
     Serial.printf("[SYS] Ly do khoi dong: %s (%d) | heap trong: %u byte\n", why, (int)rr, (unsigned)ESP.getFreeHeap());
   }
 
-  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 400000);
-  Wire.setTimeOut(20);                  // I2C lỗi không làm treo loop lâu
-  oledPresent = OLED_BEGIN();
-  if (oledPresent) {
-    display.clearDisplay(); display.cp437(true);
-    display.setTextColor(OLED_WHITE); display.setTextSize(1);
-    display.setCursor(12, 20); display.println("BE CA SMART AI");
-    display.setCursor(30, 36); display.print("FW "); display.println(FW_VERSION);
-    display.display();
-  } else Serial.println("[OLED] Khong tim thay 0x3C");
+  loadSettings();                       // đọc NVS trước (cần kích thước LCD đã lưu)
 
-  loadSettings();
+  {
+    bool puSda = i2cLineHasPullup(PIN_I2C_SDA), puScl = i2cLineHasPullup(PIN_I2C_SCL);
+    Serial.printf("[I2C] Dien day: SDA(GPIO%d)=%s | SCL(GPIO%d)=%s\n",
+                  PIN_I2C_SDA, puSda ? "co module" : "TRONG", PIN_I2C_SCL, puScl ? "co module" : "TRONG");
+    if (!puSda || !puScl)
+      Serial.println("[I2C] Day TRONG = chua cam vao chan do hoac LCD/RTC chua co nguon -> nap test_tim_chan_i2c.ino de do");
+  }
+  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL, 100000);   // 100 kHz: ổn định với dây breadboard
+  Wire.setTimeOut(50);                  // I2C lỗi không làm treo loop lâu
+  delay(50);                            // LCD cần ~50 ms sau cấp nguồn
+  i2cList = i2cScan();
+  printI2cReport();
+  if (lcdInit()) {
+    Serial.printf("[LCD] Tim thay %s. Sai kich thuoc -> go 'lcd 1602' / 'lcd 2004'. Khong thay chu -> vat bien tro\n",
+                  lcdStatus().c_str());
+    lcdSplash("BE CA SMART", String("FW ") + FW_VERSION);
+  } else {
+    Serial.println("[LCD] KHONG thay LCD (PCF8574 0x20-0x27 / 0x38-0x3F) -> loi day/nguon. Firmware van chay, tu thu lai moi 5 s");
+  }
+
   initTime();
 
 #if DS18B20_INTERNAL_PULLUP
@@ -914,7 +1277,8 @@ void setup() {
 #if DS18B20_INTERNAL_PULLUP
   pinMode(PIN_DS18B20, INPUT_PULLUP);   // bật lại sau begin() cho chắc
 #endif
-  Serial.printf("[DS18B20] Tim thay %d cam bien tren GPIO%d\n", ds18b20.getDeviceCount(), PIN_DS18B20);
+  dsCount = ds18b20.getDeviceCount();
+  Serial.printf("[DS18B20] Tim thay %d cam bien tren GPIO%d\n", dsCount, PIN_DS18B20);
   ds18b20.setResolution(11);
   ds18b20.setWaitForConversion(false);
 
@@ -944,7 +1308,7 @@ void setup() {
   else              { mqtt.setClient(mqttPlain); }
   mqtt.setServer(MQTT_HOST, MQTT_PORT);
   mqtt.setCallback(mqttCallback);
-  mqtt.setBufferSize(768);
+  mqtt.setBufferSize(1024);
   mqtt.setSocketTimeout(5);
   mqtt.setKeepAlive(30);                // chịu được loop bận lâu hơn trước khi broker báo offline
 
@@ -980,12 +1344,17 @@ void loop() {
     handleAlarm(now);
   }
 
-  if (oledPresent && now - lastOledMs >= OLED_PERIOD_MS) { lastOledMs = now; renderOLED(); }
+  handleLcdHotplug(now);
+  if (lcdPresent && now - lastLcdMs >= LCD_PERIOD_MS) { lastLcdMs = now; renderLCD(now); }
 
   if (now - lastTelemetryMs >= TELEMETRY_PERIOD_MS) {
     lastTelemetryMs = now;
     if (mqtt.connected()) sendTelemetry();
+    else bufferPush(now);                 // mất mạng: cất vào bộ đệm
   }
+
+  static unsigned long lastFlushMs = 0;   // có mạng lại: gửi bù 5 bản ghi/200 ms
+  if (bufCount > 0 && mqtt.connected() && now - lastFlushMs >= 200) { lastFlushMs = now; bufferFlush(); }
 
   if (now - lastDbTelemetryMs >= DB_TELEMETRY_PERIOD_MS) {
     lastDbTelemetryMs = now;
@@ -993,13 +1362,14 @@ void loop() {
   }
 
   if (selfTestRequested) { selfTestRequested = false; runSelfTest(); }
+  handleSerialCommand(now);
 
   static unsigned long lastBeat = 0;               // nhịp tim Serial: nhìn là biết đang kẹt ở đâu
   if (now - lastBeat >= 10000) {
     lastBeat = now;
-    Serial.printf("[SYS] uptime %lus | WiFi %s | MQTT %s (state=%d) | T=%s | heap %u\n",
+    Serial.printf("[SYS] uptime %lus | WiFi %s | MQTT %s (state=%d) | T=%s | LCD %s | heap %u\n",
                   now / 1000, WiFi.status() == WL_CONNECTED ? "OK" : "CHUA",
                   mqtt.connected() ? "OK" : "CHUA", mqtt.state(),
-                  sensorFault ? "ERR" : String(currentTemp, 1).c_str(), (unsigned)ESP.getFreeHeap());
+                  sensorFault ? "ERR" : String(currentTemp, 1).c_str(), lcdStatus().c_str(), (unsigned)ESP.getFreeHeap());
   }
 }

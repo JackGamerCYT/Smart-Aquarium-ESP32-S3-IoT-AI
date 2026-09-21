@@ -1,0 +1,26 @@
+# Render Blueprint – backend chạy 24/7 (nghe MQTT, ghi Postgres, phục vụ REST API)
+# Render Dashboard → New → Blueprint → chọn repo này → Apply.
+services:
+  - type: web
+    name: smart-aquarium-backend
+    runtime: node
+    plan: free
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL          # chuỗi kết nối Neon (pooled, có ?sslmode=require)
+        sync: false
+      - key: API_KEY               # tùy chọn: bắt buộc header X-API-Key cho POST/PUT. Để trống = không cần
+        sync: false
+      - key: MQTT_URL
+        value: mqtt://broker.hivemq.com:1883
+      - key: MQTT_WS_URL           # dashboard dùng đường WebSocket này
+        value: wss://broker.hivemq.com:8884/mqtt
+      - key: MQTT_TOPIC_BASE       # PHẢI trùng TOPIC_BASE trong firmware và index.html
+        value: smartaquarium_node2026
+      - key: INGEST_MIN_INTERVAL_MS
+        value: "10000"
+      - key: RETENTION_DAYS
+        value: "60"
