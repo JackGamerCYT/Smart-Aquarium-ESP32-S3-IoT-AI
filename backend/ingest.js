@@ -4,7 +4,7 @@ import { q } from './db.js';
 
 const TOPIC_BASE = process.env.MQTT_TOPIC_BASE || 'smartaquarium_node2026';
 const MQTT_URL = process.env.MQTT_URL || 'mqtt://broker.hivemq.com:1883';
-const MIN_STORE_MS = Number(process.env.INGEST_MIN_INTERVAL_MS || 10_000);   // gộp telemetry: lưu tối đa 1 bản ghi/10 s
+const MIN_STORE_MS = Number(process.env.INGEST_MIN_INTERVAL_MS || 10_000);   // lưu tối đa 1 bản ghi/10 s
 const DEVICE_STALE_MS = 15_000;
 
 export const state = {
@@ -25,12 +25,13 @@ const txt = (v, n) => (typeof v === 'string' && v ? v.slice(0, n) : null);
 
 async function saveTelemetry(d) {
   await q(
-    `insert into telemetry (ts_device, device_id, seq, temp, chiller, pump, fan, mode, feed_today, feed_total,
-                            alarm, rtc_temp, rssi, time_src, safe_mode, buffered, uptime_s)
-     values (coalesce($1, now()), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
-    [ts(d.ts), txt(d.dev, 40) || 'aquarium', num(d.seq), num(d.temp), bool(d.chiller), bool(d.pump), bool(d.fan),
-     txt(d.mode, 8), num(d.feed_today), num(d.feed_count), txt(d.alarm, 20), num(d.rtc_temp), num(d.rssi),
-     txt(d.time_src, 6), bool(d.safe_mode), !!d.buffered, num(d.uptime)]);
+    `insert into telemetry (ts_device, device_id, seq, temp, sp, mode, cool, heat, pid_u, pid_p, pid_i, pid_d,
+                            feed_today, feed_total, alarm, rssi, time_src, safe_mode, buffered, uptime_s)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+    [ts(d.ts), txt(d.dev, 40) || 'aquarium', num(d.seq), num(d.temp), num(d.sp), txt(d.mode, 8),
+     num(d.cool), num(d.heat), num(d.pid_u), num(d.pid_p), num(d.pid_i), num(d.pid_d),
+     num(d.feed_today), num(d.feed_count), txt(d.alarm, 20), num(d.rssi), txt(d.time_src, 6),
+     bool(d.safe_mode), !!d.buffered, num(d.uptime)]);
   state.stored++;
 }
 
@@ -51,6 +52,7 @@ async function handle(topic, payload) {
   try { d = JSON.parse(text); } catch { return; }
 
   if (kind === 'telemetry') {
+    if (d.buffered) { await saveTelemetry(d); return; }        // bản ghi gửi bù: luôn lưu
     state.received++;
     state.lastTelemetry = d;
     state.lastTelemetryAt = Date.now();
@@ -63,25 +65,25 @@ async function handle(topic, payload) {
       state.lastSeq = d.seq;
     }
     const now = Date.now();
-    if (d.buffered || now - lastStoredAt >= MIN_STORE_MS) { lastStoredAt = now; await saveTelemetry(d); }
+    if (now - lastStoredAt >= MIN_STORE_MS) { lastStoredAt = now; await saveTelemetry(d); }
     return;
   }
 
   if (kind === 'event') {
-    await q('insert into events (ts_device, device_id, type, detail) values (coalesce($1, now()), $2, $3, $4)',
+    await q('insert into events (ts_device, device_id, type, detail) values ($1, $2, $3, $4)',
       [ts(d.ts), TOPIC_BASE, txt(d.type, 24) || 'event', txt(d.detail, 300)]);
     return;
   }
 
   if (kind === 'ack' && d.id) {
-    // ESP32 có thể ACK nhanh hơn lúc lệnh của web kịp ghi vào bảng commands,
-    // nên nếu chưa thấy dòng nào thì thử lại vài lần trước khi bỏ qua.
+    // ESP32 có thể ACK trước khi lệnh kịp ghi vào bảng commands -> thử lại vài lần
+    const ackAt = new Date();                   // giờ nhận ACK thật (không tính thời gian chờ thử lại)
     for (let i = 0; i < 4; i++) {
       const rows = await q(
-        `update commands set ts_ack = now(), ack_ok = $2, ack_msg = $3,
-                             latency_ms = greatest(0, (extract(epoch from now() - ts_sent) * 1000)::int)
+        `update commands set ts_ack = $4, ack_ok = $2, ack_msg = $3,
+                             latency_ms = greatest(0, (extract(epoch from $4::timestamptz - ts_sent) * 1000)::int)
           where cmd_id = $1 and ts_ack is null returning cmd_id`,
-        [String(d.id), !!d.ok, txt(d.msg, 200)]);
+        [String(d.id), !!d.ok, txt(d.msg, 200), ackAt]);
       if (rows.length) return;
       await new Promise(r => setTimeout(r, 500));
     }
@@ -113,7 +115,7 @@ export function startIngest() {
   return client;
 }
 
-/** REST publish lệnh xuống thiết bị và (tùy chọn) chờ ACK. */
+/** REST -> publish lệnh xuống thiết bị, (tùy chọn) chờ ACK. */
 export function publishCommand(body, waitAckSec = 0) {
   const id = 'api-' + Math.random().toString(36).slice(2, 10);
   const payload = { ...body, id, src: 'api' };

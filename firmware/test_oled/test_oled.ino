@@ -1,0 +1,296 @@
+/*
+ * TEST OLED 0x3C – ESP32-S3 (SSD1306 / SH1106, 128x64, I2C)
+ * -----------------------------------------------------------
+ * KHÔNG cần thư viện ngoài (driver tự viết, chỉ dùng Wire có sẵn).
+ * Nối dây (theo sơ đồ):  OLED VCC -> 5V   GND -> GND   SDA -> GPIO8   SCL -> GPIO9
+ *   Đo SDA/SCL lúc rảnh: phải ~3.3V. Nếu ra ~5V -> chuyển VCC OLED sang 3V3.
+ *
+ * Chương trình:
+ *   1. Quét I2C, báo có thấy 0x3C không.
+ *   2. Lặp mãi, mỗi màn hình 3 s:
+ *        A. Sáng TOÀN BỘ   -> kiểm tra điểm chết
+ *        B. Khung viền + ô cờ -> nếu lệch/viền mép phải bị nhiễu = sai chip
+ *        C. Chữ + bộ đếm giây
+ *
+ * Serial Monitor 115200, gõ lệnh:
+ *   sh1106   -> đổi sang chip SH1106 (màn 1.3" thường là loại này)
+ *   ssd1306  -> đổi sang chip SSD1306 (màn 0.96" thường là loại này)
+ *   scan     -> quét lại I2C
+ * Dấu hiệu chọn sai chip: hình bị lệch 2 cột, mép phải có vệt nhiễu.
+ */
+
+#include <Wire.h>
+
+const int     PIN_SDA   = 8;
+const int     PIN_SCL   = 9;
+const uint8_t OLED_ADDR = 0x3C;
+const unsigned long PAGE_MS = 3000;
+
+bool    isSH1106 = false;          // mặc định SSD1306; gõ "sh1106" nếu lệch hình
+uint8_t fb[8][128];                // khung hình 128x64 (8 trang x 128 cột)
+
+static const uint8_t FONT5X7[] = {   // ASCII 0x20..0x7E, 5 byte/ký tự (font chuẩn 5x7)
+  0x00, 0x00, 0x00, 0x00, 0x00,  // ' '
+  0x00, 0x00, 0x5F, 0x00, 0x00,  // '!'
+  0x00, 0x07, 0x00, 0x07, 0x00,  // '"'
+  0x14, 0x7F, 0x14, 0x7F, 0x14,  // '#'
+  0x24, 0x2A, 0x7F, 0x2A, 0x12,  // '$'
+  0x23, 0x13, 0x08, 0x64, 0x62,  // '%'
+  0x36, 0x49, 0x56, 0x20, 0x50,  // '&'
+  0x00, 0x08, 0x07, 0x03, 0x00,  // "'"
+  0x00, 0x1C, 0x22, 0x41, 0x00,  // '('
+  0x00, 0x41, 0x22, 0x1C, 0x00,  // ')'
+  0x2A, 0x1C, 0x7F, 0x1C, 0x2A,  // '*'
+  0x08, 0x08, 0x3E, 0x08, 0x08,  // '+'
+  0x00, 0x80, 0x70, 0x30, 0x00,  // ','
+  0x08, 0x08, 0x08, 0x08, 0x08,  // '-'
+  0x00, 0x00, 0x60, 0x60, 0x00,  // '.'
+  0x20, 0x10, 0x08, 0x04, 0x02,  // '/'
+  0x3E, 0x51, 0x49, 0x45, 0x3E,  // '0'
+  0x00, 0x42, 0x7F, 0x40, 0x00,  // '1'
+  0x72, 0x49, 0x49, 0x49, 0x46,  // '2'
+  0x21, 0x41, 0x49, 0x4D, 0x33,  // '3'
+  0x18, 0x14, 0x12, 0x7F, 0x10,  // '4'
+  0x27, 0x45, 0x45, 0x45, 0x39,  // '5'
+  0x3C, 0x4A, 0x49, 0x49, 0x31,  // '6'
+  0x41, 0x21, 0x11, 0x09, 0x07,  // '7'
+  0x36, 0x49, 0x49, 0x49, 0x36,  // '8'
+  0x46, 0x49, 0x49, 0x29, 0x1E,  // '9'
+  0x00, 0x00, 0x14, 0x00, 0x00,  // ':'
+  0x00, 0x40, 0x34, 0x00, 0x00,  // ';'
+  0x00, 0x08, 0x14, 0x22, 0x41,  // '<'
+  0x14, 0x14, 0x14, 0x14, 0x14,  // '='
+  0x00, 0x41, 0x22, 0x14, 0x08,  // '>'
+  0x02, 0x01, 0x59, 0x09, 0x06,  // '?'
+  0x3E, 0x41, 0x5D, 0x59, 0x4E,  // '@'
+  0x7C, 0x12, 0x11, 0x12, 0x7C,  // 'A'
+  0x7F, 0x49, 0x49, 0x49, 0x36,  // 'B'
+  0x3E, 0x41, 0x41, 0x41, 0x22,  // 'C'
+  0x7F, 0x41, 0x41, 0x41, 0x3E,  // 'D'
+  0x7F, 0x49, 0x49, 0x49, 0x41,  // 'E'
+  0x7F, 0x09, 0x09, 0x09, 0x01,  // 'F'
+  0x3E, 0x41, 0x41, 0x51, 0x73,  // 'G'
+  0x7F, 0x08, 0x08, 0x08, 0x7F,  // 'H'
+  0x00, 0x41, 0x7F, 0x41, 0x00,  // 'I'
+  0x20, 0x40, 0x41, 0x3F, 0x01,  // 'J'
+  0x7F, 0x08, 0x14, 0x22, 0x41,  // 'K'
+  0x7F, 0x40, 0x40, 0x40, 0x40,  // 'L'
+  0x7F, 0x02, 0x1C, 0x02, 0x7F,  // 'M'
+  0x7F, 0x04, 0x08, 0x10, 0x7F,  // 'N'
+  0x3E, 0x41, 0x41, 0x41, 0x3E,  // 'O'
+  0x7F, 0x09, 0x09, 0x09, 0x06,  // 'P'
+  0x3E, 0x41, 0x51, 0x21, 0x5E,  // 'Q'
+  0x7F, 0x09, 0x19, 0x29, 0x46,  // 'R'
+  0x26, 0x49, 0x49, 0x49, 0x32,  // 'S'
+  0x03, 0x01, 0x7F, 0x01, 0x03,  // 'T'
+  0x3F, 0x40, 0x40, 0x40, 0x3F,  // 'U'
+  0x1F, 0x20, 0x40, 0x20, 0x1F,  // 'V'
+  0x3F, 0x40, 0x38, 0x40, 0x3F,  // 'W'
+  0x63, 0x14, 0x08, 0x14, 0x63,  // 'X'
+  0x03, 0x04, 0x78, 0x04, 0x03,  // 'Y'
+  0x61, 0x59, 0x49, 0x4D, 0x43,  // 'Z'
+  0x00, 0x7F, 0x41, 0x41, 0x41,  // '['
+  0x02, 0x04, 0x08, 0x10, 0x20,  // '\\'
+  0x00, 0x41, 0x41, 0x41, 0x7F,  // ']'
+  0x04, 0x02, 0x01, 0x02, 0x04,  // '^'
+  0x40, 0x40, 0x40, 0x40, 0x40,  // '_'
+  0x00, 0x03, 0x07, 0x08, 0x00,  // '`'
+  0x20, 0x54, 0x54, 0x78, 0x40,  // 'a'
+  0x7F, 0x28, 0x44, 0x44, 0x38,  // 'b'
+  0x38, 0x44, 0x44, 0x44, 0x28,  // 'c'
+  0x38, 0x44, 0x44, 0x28, 0x7F,  // 'd'
+  0x38, 0x54, 0x54, 0x54, 0x18,  // 'e'
+  0x00, 0x08, 0x7E, 0x09, 0x02,  // 'f'
+  0x18, 0xA4, 0xA4, 0x9C, 0x78,  // 'g'
+  0x7F, 0x08, 0x04, 0x04, 0x78,  // 'h'
+  0x00, 0x44, 0x7D, 0x40, 0x00,  // 'i'
+  0x20, 0x40, 0x40, 0x3D, 0x00,  // 'j'
+  0x7F, 0x10, 0x28, 0x44, 0x00,  // 'k'
+  0x00, 0x41, 0x7F, 0x40, 0x00,  // 'l'
+  0x7C, 0x04, 0x78, 0x04, 0x78,  // 'm'
+  0x7C, 0x08, 0x04, 0x04, 0x78,  // 'n'
+  0x38, 0x44, 0x44, 0x44, 0x38,  // 'o'
+  0xFC, 0x18, 0x24, 0x24, 0x18,  // 'p'
+  0x18, 0x24, 0x24, 0x18, 0xFC,  // 'q'
+  0x7C, 0x08, 0x04, 0x04, 0x08,  // 'r'
+  0x48, 0x54, 0x54, 0x54, 0x24,  // 's'
+  0x04, 0x04, 0x3F, 0x44, 0x24,  // 't'
+  0x3C, 0x40, 0x40, 0x20, 0x7C,  // 'u'
+  0x1C, 0x20, 0x40, 0x20, 0x1C,  // 'v'
+  0x3C, 0x40, 0x30, 0x40, 0x3C,  // 'w'
+  0x44, 0x28, 0x10, 0x28, 0x44,  // 'x'
+  0x4C, 0x90, 0x90, 0x90, 0x7C,  // 'y'
+  0x44, 0x64, 0x54, 0x4C, 0x44,  // 'z'
+  0x00, 0x08, 0x36, 0x41, 0x00,  // '{'
+  0x00, 0x00, 0x77, 0x00, 0x00,  // '|'
+  0x00, 0x41, 0x36, 0x08, 0x00,  // '}'
+  0x02, 0x01, 0x02, 0x04, 0x02,  // '~'
+};
+
+// ------------------------------------------------------------ I2C thấp tầng
+bool oledCmd(uint8_t c) {
+  Wire.beginTransmission(OLED_ADDR);
+  Wire.write(0x00);
+  Wire.write(c);
+  return Wire.endTransmission() == 0;
+}
+
+void oledFlush() {
+  const uint8_t off = isSH1106 ? 2 : 0;
+  for (uint8_t p = 0; p < 8; p++) {
+    oledCmd(0xB0 | p);
+    oledCmd(0x00 | (off & 0x0F));
+    oledCmd(0x10 | (off >> 4));
+    for (uint8_t x = 0; x < 128; x += 16) {       // gửi từng gói 16 byte
+      Wire.beginTransmission(OLED_ADDR);
+      Wire.write(0x40);
+      for (uint8_t i = 0; i < 16; i++) Wire.write(fb[p][x + i]);
+      Wire.endTransmission();
+    }
+  }
+}
+
+bool oledInit() {
+  const uint8_t seq[] = {
+    0xAE,             // tắt màn
+    0xD5, 0x80,       // xung nhịp
+    0xA8, 0x3F,       // 64 dòng
+    0xD3, 0x00,       // offset dọc
+    0x40,             // dòng bắt đầu
+    0x8D, 0x14,       // bơm áp (SSD1306; SH1106 bỏ qua)
+    0x20, 0x02,       // chế độ trang
+    0xA1, 0xC8,       // lật ngang/dọc cho đúng chiều
+    0xDA, 0x12,
+    0x81, 0xCF,       // độ tương phản
+    0xD9, 0xF1,
+    0xDB, 0x40,
+    0xA4, 0xA6,       // hiển thị theo RAM, không đảo màu
+  };
+  for (uint8_t c : seq) if (!oledCmd(c)) return false;
+  memset(fb, 0, sizeof(fb));
+  oledFlush();
+  return oledCmd(0xAF);                          // bật màn
+}
+
+// ------------------------------------------------------------ vẽ
+void clearFb() { memset(fb, 0, sizeof(fb)); }
+
+void pset(int x, int y) {
+  if (x < 0 || x > 127 || y < 0 || y > 63) return;
+  fb[y >> 3][x] |= (1 << (y & 7));
+}
+
+void drawChar(int x, int page, char c) {
+  if (c < 0x20 || c > 0x7E) c = '?';
+  const uint8_t *g = &FONT5X7[(c - 0x20) * 5];
+  for (int i = 0; i < 5; i++) if (x + i < 128) fb[page][x + i] = g[i];
+}
+
+void drawText(int x, int page, const char *s) {
+  while (*s && x < 128) { drawChar(x, page, *s++); x += 6; }
+}
+
+// ------------------------------------------------------------ các màn test
+void pageFullWhite() {
+  memset(fb, 0xFF, sizeof(fb));
+  oledFlush();
+  Serial.println("[A] Sang toan bo - co diem nao khong sang = diem chet");
+}
+
+void pageBorderChecker() {
+  clearFb();
+  for (int x = 0; x < 128; x++) { pset(x, 0); pset(x, 63); }
+  for (int y = 0; y < 64; y++)  { pset(0, y); pset(127, y); }
+  for (int y = 16; y < 48; y++)
+    for (int x = 32; x < 96; x++)
+      if (((x >> 2) + (y >> 2)) & 1) pset(x, y);
+  oledFlush();
+  Serial.println("[B] Khung vien + o co - vien phai du 4 canh, khong lech");
+}
+
+void pageText(unsigned long sec) {
+  char buf[24];
+  clearFb();
+  drawText(0, 0, "  OLED TEST - OK  ");
+  snprintf(buf, sizeof(buf), "Dia chi : 0x%02X", OLED_ADDR);
+  drawText(0, 2, buf);
+  snprintf(buf, sizeof(buf), "Chip    : %s", isSH1106 ? "SH1106" : "SSD1306");
+  drawText(0, 3, buf);
+  drawText(0, 4, "SDA=GPIO8 SCL=GPIO9");
+  snprintf(buf, sizeof(buf), "Thoi gian: %lus", sec);
+  drawText(0, 6, buf);
+  drawText(0, 7, "ABCxyz 0123456789");
+  oledFlush();
+  Serial.printf("[C] Chu + bo dem (%lus)\n", sec);
+}
+
+// ------------------------------------------------------------ I2C scan
+bool scanI2C() {
+  bool found3C = false;
+  int n = 0;
+  Serial.println("Quet I2C...");
+  for (uint8_t a = 1; a < 127; a++) {
+    Wire.beginTransmission(a);
+    if (Wire.endTransmission() == 0) {
+      Serial.printf("  Thay thiet bi o 0x%02X\n", a);
+      if (a == OLED_ADDR) found3C = true;
+      n++;
+    }
+  }
+  if (!n) Serial.println("  KHONG thay thiet bi nao -> kiem tra day SDA/SCL, VCC, GND");
+  else if (!found3C) Serial.println("  Khong thay 0x3C -> OLED chua noi hoac dia chi khac");
+  return found3C;
+}
+
+// ------------------------------------------------------------ Serial
+void handleSerial() {
+  static String line;
+  while (Serial.available()) {
+    char c = (char)Serial.read();
+    if (c == '\n' || c == '\r') {
+      line.trim(); line.toLowerCase();
+      if (line == "sh1106")       { isSH1106 = true;  Serial.println("-> Chip SH1106"); oledFlush(); }
+      else if (line == "ssd1306") { isSH1106 = false; Serial.println("-> Chip SSD1306"); oledFlush(); }
+      else if (line == "scan")    { scanI2C(); }
+      else if (line.length())     { Serial.println("Lenh: sh1106 | ssd1306 | scan"); }
+      line = "";
+    } else if (line.length() < 20) line += c;
+  }
+}
+
+bool waitMs(unsigned long ms) {
+  unsigned long t0 = millis();
+  while (millis() - t0 < ms) { handleSerial(); delay(10); }
+  return true;
+}
+
+// ------------------------------------------------------------ setup / loop
+bool oledOk = false;
+
+void setup() {
+  Serial.begin(115200);
+  delay(1500);
+  Serial.println("\n=== TEST OLED 0x3C (SDA=GPIO8, SCL=GPIO9) ===");
+
+  Wire.begin(PIN_SDA, PIN_SCL);
+  Wire.setClock(100000);
+
+  if (!scanI2C()) {
+    Serial.println("Van thu khoi tao OLED... (go 'scan' de quet lai)");
+  }
+  oledOk = oledInit();
+  Serial.println(oledOk ? "OLED khoi tao OK." : "OLED khoi tao LOI (khong ACK).");
+  Serial.println("Lenh: sh1106 | ssd1306 | scan");
+}
+
+void loop() {
+  if (!oledOk) {                        // tự thử lại mỗi 3 s nếu OLED chưa lên
+    waitMs(PAGE_MS);
+    oledOk = oledInit();
+    Serial.println(oledOk ? "OLED da len." : "OLED van chua tra loi...");
+    return;
+  }
+  pageFullWhite();        waitMs(PAGE_MS);
+  pageBorderChecker();    waitMs(PAGE_MS);
+  pageText(millis() / 1000); waitMs(PAGE_MS);
+}

@@ -1,122 +1,126 @@
 /*
- * TEST CẢM BIẾN DS18B20 – ESP32-S3 (chẩn đoán "Mất cảm biến" / ERR / -127°C)
- * ---------------------------------------------------------------------------
- * Thư viện: OneWire, DallasTemperature (đã cài cho firmware chính).
- * Nạp, mở Serial Monitor 115200.
- *
- * Nối dây DS18B20 (loại dây chống nước 3 sợi):
- *   ĐỎ   (VCC)  -> 3V3
- *   ĐEN  (GND)  -> GND
- *   VÀNG (DATA) -> GPIO4
- *   Trở 4.7kΩ nối giữa VÀNG và ĐỎ (DATA lên 3V3)  <-- RẤT NÊN CÓ
- *
- * Chương trình kiểm tra:
- *   B1. Dây DATA có trở kéo lên ngoài không (4.7k)?
- *   B2. Có cảm biến trả lời trên GPIO4 không (xung "presence") – thử cả có/không trở kéo nội
- *   B3. Dò các chân khác: cảm biến có bị cắm nhầm chân không?
- *   B4. Đọc 20 lần, đếm số lần lỗi -> biết dây chập chờn hay ổn định
+ * TEST DS18B20 – cắm ở cổng "SERVO 2" (theo sơ đồ):
+ *   chân 3 (DATA) -> GPIO6 · chân 2 (VCC) -> 3V3 · chân 1 -> GND
+ * KHÔNG cần điện trở kéo lên, KHÔNG cần thư viện (driver 1-Wire tự viết, giống firmware chính).
+ * Serial Monitor 115200: mỗi giây in nhiệt độ, đếm số lần đọc OK / lỗi.
  */
-#include <OneWire.h>
-#include <DallasTemperature.h>
+#include "driver/gpio.h"
 
-const int DS_PIN = 4;
-// Chân an toàn để dò (không đụng relay 18/19, I2C 8/9, còi 12, servo 13, quạt 15, UART 43/44)
-const int CAND[] = { 1, 2, 4, 5, 6, 7, 10, 11, 14, 16, 17, 21, 38, 39, 40, 41, 42, 47, 48 };
+#define PIN_DS18B20 6
+bool dsPresent = false;
+uint32_t dsReadOk = 0, dsReadFail = 0;
 
-bool hasExternalPullup(int pin) {
-  pinMode(pin, INPUT_PULLDOWN);
-  delay(5);
-  int hi = 0;
-  for (int i = 0; i < 10; i++) { hi += digitalRead(pin); delayMicroseconds(200); }
-  pinMode(pin, INPUT);
-  return hi >= 9;
+static portMUX_TYPE owMux = portMUX_INITIALIZER_UNLOCKED;
+const gpio_num_t OW_PIN = (gpio_num_t)PIN_DS18B20;
+const uint8_t OW_SAMPLE_US[] = { 12, 9, 15, 18, 22, 26, 30, 7 };
+uint8_t owSampleIdx = 0; bool owSampleLocked = false;
+
+inline void owHigh()    { gpio_set_level(OW_PIN, 1); gpio_set_direction(OW_PIN, GPIO_MODE_INPUT_OUTPUT); }
+inline void owLowPP()   { gpio_set_level(OW_PIN, 0); }
+inline void owToOD()    { gpio_set_direction(OW_PIN, GPIO_MODE_INPUT_OUTPUT_OD); }
+inline void owRelease() { gpio_set_level(OW_PIN, 1); }
+inline int  owIn()      { return gpio_get_level(OW_PIN); }
+
+void owBegin() { gpio_reset_pin(OW_PIN); gpio_set_pull_mode(OW_PIN, GPIO_PULLUP_ONLY); owHigh(); }
+
+bool owReset() {
+  owHigh(); delayMicroseconds(10);
+  owLowPP(); delayMicroseconds(490);
+  portENTER_CRITICAL(&owMux);
+  owHigh(); delayMicroseconds(2);
+  owToOD(); owRelease();
+  delayMicroseconds(68);
+  bool present = owIn() == 0;
+  portEXIT_CRITICAL(&owMux);
+  delayMicroseconds(420);
+  owHigh();
+  return present;
+}
+void owWriteBit(uint8_t b) {
+  portENTER_CRITICAL(&owMux);
+  owLowPP(); delayMicroseconds(b ? 5 : 65);
+  gpio_set_level(OW_PIN, 1);
+  delayMicroseconds(b ? 65 : 5);
+  portEXIT_CRITICAL(&owMux);
+}
+uint8_t owReadBit() {
+  uint8_t us = OW_SAMPLE_US[owSampleIdx];
+  portENTER_CRITICAL(&owMux);
+  owLowPP(); owToOD(); delayMicroseconds(3);
+  owRelease(); delayMicroseconds(us);
+  uint8_t r = owIn();
+  portEXIT_CRITICAL(&owMux);
+  delayMicroseconds(us < 62 ? 65 - us : 3);
+  owHigh(); delayMicroseconds(2);
+  return r;
+}
+void owWrite(uint8_t v) { for (int i = 0; i < 8; i++) owWriteBit((v >> i) & 1); }
+uint8_t owRead() { uint8_t v = 0; for (int i = 0; i < 8; i++) v |= owReadBit() << i; return v; }
+uint8_t owCrc8(const uint8_t *d, int n) {
+  uint8_t c = 0;
+  while (n--) { uint8_t b = *d++; for (int i = 0; i < 8; i++) { uint8_t mix = (c ^ b) & 1; c >>= 1; if (mix) c ^= 0x8C; b >>= 1; } }
+  return c;
+}
+void owNextSample() {
+  if (owSampleLocked) { static uint8_t fails = 0; if (++fails < 5) return; fails = 0; owSampleLocked = false; }
+  owSampleIdx = (owSampleIdx + 1) % sizeof(OW_SAMPLE_US);
+}
+bool dsReadRom() {
+  for (uint8_t tries = 0; tries < sizeof(OW_SAMPLE_US) * 2; tries++) {
+    if (!owReset()) return false;
+    owWrite(0x33);
+    uint8_t rom[8]; for (int i = 0; i < 8; i++) rom[i] = owRead();
+    if (rom[0] == 0x28 && owCrc8(rom, 7) == rom[7]) { owSampleLocked = true; return true; }
+    owNextSample();
+  }
+  return false;
+}
+bool dsStartConversion() {
+  if (!owReset()) return false;
+  owWrite(0xCC); owWrite(0x44);
+  owHigh();                                 // giữ dây 3.3V cấp điện khi cảm biến đo
+  return true;
+}
+#define DS_ERR -127.0f
+float dsReadTemp() {
+  for (int a = 0; a < 3; a++) {
+    if (!owReset()) { dsReadFail++; return DS_ERR; }
+    owWrite(0xCC); owWrite(0xBE);
+    uint8_t sp[9]; for (int i = 0; i < 9; i++) sp[i] = owRead();
+    bool allFF = true; for (int i = 0; i < 9; i++) if (sp[i] != 0xFF) allFF = false;
+    if (!allFF && owCrc8(sp, 8) == sp[8]) {
+      owSampleLocked = true; dsReadOk++;
+      return (int16_t)((sp[1] << 8) | sp[0]) / 16.0f;
+    }
+    owNextSample();
+  }
+  dsReadFail++;
+  return DS_ERR;
+}
+void dsScan(bool verbose) {
+  owBegin();
+  bool present = owReset();
+  dsPresent = present && dsReadRom();
+  if (!verbose) return;
+  if (dsPresent) Serial.printf("[DS18B20] OK tren GPIO%d (lay mau %u us)\n", PIN_DS18B20, OW_SAMPLE_US[owSampleIdx]);
+  else if (present) Serial.printf("[DS18B20] Co tra loi tren GPIO%d nhung doc loi -> tu thu lai\n", PIN_DS18B20);
+  else Serial.printf("[DS18B20] KHONG thay cam bien o GPIO%d (cong SERVO 2: chan3 DATA, chan2 VCC, chan1 GND)\n", PIN_DS18B20);
 }
 
-bool presenceOn(int pin, bool internalPullup) {
-  OneWire ow(pin);
-  if (internalPullup) pinMode(pin, INPUT_PULLUP);
-  delay(2);
-  bool ok = false;
-  for (int i = 0; i < 3 && !ok; i++) ok = ow.reset();
-  return ok;
-}
 
 void setup() {
   Serial.begin(115200);
-  delay(2000);
-  Serial.println("\n================ TEST DS18B20 ================");
-
-  // ---------- B1 ----------
-  bool ext = hasExternalPullup(DS_PIN);
-  Serial.printf("\n[B1] Tro keo len ngoai tren GPIO%d: %s\n", DS_PIN,
-                ext ? "CO (da gan 4.7k hoac tuong duong) -> tot" : "KHONG CO -> dang dua vao tro keo NOI ~45k (yeu, de mat cam bien)");
-
-  // ---------- B2 ----------
-  bool pNo  = presenceOn(DS_PIN, false);
-  bool pInt = presenceOn(DS_PIN, true);
-  Serial.printf("[B2] Cam bien tra loi tren GPIO%d: khong keo noi = %s | co keo noi = %s\n",
-                DS_PIN, pNo ? "CO" : "KHONG", pInt ? "CO" : "KHONG");
-
-  // ---------- B3 ----------
-  int foundOther = -1;
-  if (!pNo && !pInt) {
-    Serial.println("[B3] Do cac chan khac (co keo noi)...");
-    for (int p : CAND) {
-      if (p == DS_PIN) continue;
-      if (presenceOn(p, true)) { Serial.printf("   ✔ Thay DS18B20 o GPIO%d !\n", p); foundOther = p; }
-    }
-    if (foundOther < 0) Serial.println("   Khong thay DS18B20 o chan nao.");
-  }
-
-  // ---------- B4 ----------
-  int errs = 0, ok = 0, n = 0;
-  if (pNo || pInt) {
-    pinMode(DS_PIN, INPUT_PULLUP);
-    OneWire ow(DS_PIN);
-    DallasTemperature ds(&ow);
-    ds.begin();
-    pinMode(DS_PIN, INPUT_PULLUP);                    // bật lại kéo nội sau begin()
-    n = ds.getDeviceCount();
-    DeviceAddress a;
-    Serial.printf("[B4] So cam bien: %d", n);
-    if (n && ds.getAddress(a, 0)) {
-      Serial.print(" | dia chi ROM: ");
-      for (int i = 0; i < 8; i++) Serial.printf("%02X", a[i]);
-      Serial.printf(" | che do: %s", ds.isParasitePowerMode() ? "KY SINH (day DO chua noi 3V3!)" : "cap nguon rieng (dung)");
-    }
-    Serial.println();
-    ds.setResolution(11);
-    for (int i = 0; i < 20; i++) {
-      ds.requestTemperatures();
-      float t = ds.getTempCByIndex(0);
-      bool bad = (t == DEVICE_DISCONNECTED_C) || (t == 85.0f);
-      if (bad) errs++; else ok++;
-      Serial.printf("   lan %2d: %s\n", i + 1, bad ? (t == 85.0f ? "85.0 (loi: nguon yeu / doc qua som)" : "-127 (mat tin hieu)") : String(t, 2).c_str());
-      delay(300);
-    }
-  }
-
-  // ---------- KẾT LUẬN ----------
-  Serial.println("\n================ KET LUAN ================");
-  if ((pNo || pInt) && errs == 0) {
-    Serial.printf("✔ DS18B20 hoat dong tot (%d/20 lan doc OK).", ok);
-    Serial.println(ext ? "" : " Van NEN gan tro 4.7k de chay lau dai khong mat.");
-    Serial.println("  Neu firmware chinh van bao ERR -> nap lai firmware v3.2.0 moi nhat.");
-  } else if ((pNo || pInt) && errs > 0) {
-    Serial.printf("⚠ Cam bien CHAP CHON: %d/20 lan loi.\n", errs);
-    Serial.println("  -> Nguyen nhan so 1: THIEU TRO 4.7k. Gan tro 4.7k giua day VANG (DATA) va DO (3V3).");
-    Serial.println("  -> Khong co 4.7k: dung tam 2 tro 10k mac song song (=5k), hoac 1 tro 2.2k–10k bat ky.");
-    Serial.println("  -> Kiem tra moi han / day cam breadboard long.");
-  } else if (foundOther >= 0) {
-    Serial.printf("✘ Ban cam day VANG (DATA) vao GPIO%d, khong phai GPIO4. Cam lai vao GPIO4.\n", foundOther);
-  } else {
-    Serial.println("✘ Khong co cam bien nao tra loi:");
-    Serial.println("  1. Do: VCC(3V3) - GND - DATA dung mau? (DO=3V3, DEN=GND, VANG=DATA)");
-    Serial.println("     Mot so cam bien mau khac: DO=VCC, VANG/TRANG=DATA, DEN/XANH=GND.");
-    Serial.println("  2. Cam nguoc VCC/GND lau co the lam CHAY cam bien (cam bien nong khi cham tay).");
-    Serial.println("  3. Gan tro 4.7k DATA-3V3 roi thu lai – keo noi thuong KHONG du voi day dai 1 m.");
-  }
-  Serial.println("\n(Nhan RESET de do lai)");
+  delay(1000);
+  Serial.println("\n=== TEST DS18B20 tren GPIO6 (cong SERVO 2) ===");
+  dsScan(true);
 }
 
-void loop() {}
+void loop() {
+  if (!dsPresent) { delay(2000); dsScan(true); return; }
+  if (!dsStartConversion()) { Serial.println("Mat cam bien (khong co xung presence)"); dsPresent = false; return; }
+  delay(800);                                   // 12 bit: 750 ms
+  float t = dsReadTemp();
+  if (t == DS_ERR || t == 85.0f) Serial.printf("LOI doc (ok %lu / loi %lu)\n", (unsigned long)dsReadOk, (unsigned long)dsReadFail);
+  else Serial.printf("Nhiet do: %.4f C   (ok %lu / loi %lu, lay mau %u us)\n", t, (unsigned long)dsReadOk, (unsigned long)dsReadFail, OW_SAMPLE_US[owSampleIdx]);
+  delay(200);
+}
