@@ -28,20 +28,19 @@ export async function answer(question) {
   // ---- Lệnh điều khiển: chỉ trả về "action", web phải bấm xác nhận mới gửi ----
   if (!isQuestion) {
     if (/(cho ca an|cho an)/.test(t)) return { answer: 'Cho cá ăn ngay bây giờ?', action: { device: 'feed' } };
+    if (/(bat|mo|chay) (may )?bom/.test(t)) return { answer: 'Bật động cơ bơm nước?', action: { device: 'pump', action: 'ON' } };
+    if (/(tat|dung|ngung) (may )?bom/.test(t)) return { answer: 'Tắt động cơ bơm nước? (sò lạnh sẽ tạm khóa nếu đang bật khóa theo bơm)', action: { device: 'pump', action: 'OFF' } };
+    if (/(suoi|lam nong|lam am)/.test(t)) return { answer: 'Module sưởi USB tự giữ nhiệt, ESP32 không bật/tắt được nó. Mình chỉ điều khiển được sò lạnh và bơm.' };
     if (/(dat|chinh|giu).*(nhiet|do)/.test(t) && numIn(t) !== null) {
-      const v = numIn(t);
-      if (v < 20 || v > 32) return { answer: 'Nhiệt độ đặt phải trong khoảng 20–32 °C.' };
-      return { answer: `Đặt nhiệt độ mong muốn ${f(v)} °C?`, action: { device: 'setpoint', value: v } };
+      const v = numIn(t), lo = state.lastTelemetry?.sp_min ?? 26.5;
+      if (v < lo || v > 32) return { answer: `Nhiệt độ đặt phải trong khoảng ${f(lo)}–32 °C (cao hơn nhiệt sưởi USB ít nhất 0,5 °C để sò và sưởi không chạy ngược nhau).` };
+      return { answer: `Đặt nhiệt độ làm lạnh ${f(v)} °C?`, action: { device: 'setpoint', value: v } };
     }
-    if (/(che do )?(tu dong|auto)/.test(t)) return { answer: 'Chuyển sang chế độ AUTO (PID tự điều khiển)?', action: { device: 'mode', action: 'AUTO' } };
-    if (/(tat het|tat he thong|che do off|dung dieu khien)/.test(t)) return { answer: 'Tắt cả sò lạnh và lõi sưởi (chế độ OFF)?', action: { device: 'mode', action: 'OFF' } };
+    if (/(che do )?(tu dong|auto)/.test(t)) return { answer: 'Chuyển sò lạnh sang AUTO (PID tự điều khiển)?', action: { device: 'mode', action: 'AUTO' } };
+    if (/(tat so|tat lam lanh|tat het|che do off|dung dieu khien)/.test(t)) return { answer: 'Tắt sò lạnh (chế độ OFF)? Bơm không bị ảnh hưởng.', action: { device: 'mode', action: 'OFF' } };
     if (/(lam lanh|so lanh|lam mat)/.test(t) && numIn(t) !== null) {
       const v = Math.min(100, Math.max(0, numIn(t)));
       return { answer: `Chạy sò lạnh ${f(v, 0)}% (MANUAL 30 phút)?`, action: { device: 'cool', value: v } };
-    }
-    if (/(suoi|lam nong|lam am)/.test(t) && numIn(t) !== null) {
-      const v = Math.min(100, Math.max(0, numIn(t)));
-      return { answer: `Chạy lõi sưởi ${f(v, 0)}% (MANUAL 30 phút)?`, action: { device: 'heat', value: v } };
     }
   }
 
@@ -52,7 +51,8 @@ export async function answer(question) {
     const d = state.lastTelemetry;
     if (!d) return { answer: 'Chưa nhận được dữ liệu nào từ ESP32.' };
     return { answer: `Nhiệt độ ${d.temp == null ? 'LỖI cảm biến' : f(d.temp, 2) + '°C'} (đặt ${f(d.sp)}°C) · chế độ ${d.mode}`
-      + ` · sò lạnh ${f(d.cool, 0)}% · lõi sưởi ${f(d.heat, 0)}% · PID u=${f(d.pid_u)}`
+      + ` · sò lạnh ${f(d.cool, 0)}%${d.cool_block ? ' (khóa: ' + d.cool_block + ')' : ''} · bơm ${d.pump ? 'BẬT' : 'TẮT'} · PID u=${f(d.pid_u)}`
+      + ` · sưởi USB tự giữ ${f(d.heater_sp)}°C`
       + ` · cho ăn hôm nay ${d.feed_today ?? 0} lần, lần kế ${d.next_feed ?? '--'} · cảnh báo ${d.alarm ?? 'NONE'}`
       + ` · thiết bị ${deviceOnline() ? 'ONLINE' : 'OFFLINE'}` };
   }
@@ -90,19 +90,20 @@ export async function answer(question) {
       + (last ? `. Lần gần nhất ${vnTime(last.ts_server)} – ${last.detail}` : '.') };
   }
 
-  // ---- Sò lạnh / sưởi chạy bao lâu ----
-  if (/(so lanh|lam lanh|lam mat|suoi|lam nong)/.test(t)) {
+  // ---- Sò lạnh / bơm chạy bao lâu ----
+  if (/(so lanh|lam lanh|lam mat|bom)/.test(t)) {
     const e = await energy(hours);
-    const pc = e.total_s ? e.cool_s / e.total_s * 100 : 0, ph = e.total_s ? e.heat_s / e.total_s * 100 : 0;
+    const pc = e.total_s ? e.cool_s / e.total_s * 100 : 0, pp = e.pump_known_s ? e.pump_s / e.pump_known_s * 100 : 0;
     return { answer: `Trong ${hours} giờ qua: sò lạnh hoạt động ${f(e.cool_s / 60, 0)} phút (${f(pc, 1)}% thời gian, ${f(e.cool_wh, 1)} Wh), `
-      + `lõi sưởi ${f(e.heat_s / 60, 0)} phút (${f(ph, 1)}%, ${f(e.heat_wh, 1)} Wh).` };
+      + `bơm bật ${f(e.pump_s / 60, 0)} phút (${f(pp, 1)}%, ${f(e.pump_wh, 1)} Wh).` };
   }
 
   // ---- Điện năng / tiền ----
   if (/(dien nang|tieu thu|tien dien|chi phi|bao nhieu dien|wh|kwh)/.test(t)) {
     const e = await energy(hours);
-    return { answer: `Ước tính ${hours} giờ qua tiêu thụ ${f(e.wh, 1)} Wh (sò ${f(e.cool_wh, 1)} Wh + sưởi ${f(e.heat_wh, 1)} Wh) ≈ ${f(e.cost, 0)} đ`
-      + ` (đơn giá ${e.settings.tariff_vnd_per_kwh} đ/kWh; sò ${e.settings.cool_w} W, sưởi ${e.settings.heat_w} W, tính theo % PWM).` };
+    return { answer: `Ước tính ${hours} giờ qua tiêu thụ ${f(e.wh, 1)} Wh (sò ${f(e.cool_wh, 1)} Wh + bơm ${f(e.pump_wh, 1)} Wh) ≈ ${f(e.cost, 0)} đ`
+      + ` (đơn giá ${e.settings.tariff_vnd_per_kwh} đ/kWh; sò ${e.settings.cool_w} W theo % PWM, bơm ${e.settings.pump_w} W khi bật;`
+      + ` chưa tính module sưởi USB vì nó tự bật/tắt).` };
   }
 
   // ---- Cảnh báo ----
@@ -130,8 +131,8 @@ export async function answer(question) {
   }
 
   return {
-    answer: 'Mình trả lời được: nhiệt độ hiện tại · cao nhất/thấp nhất · sai số PID · cho ăn mấy lần · sò/sưởi chạy bao lâu · '
-      + 'điện năng và tiền điện · cảnh báo · offline lúc nào · lệnh gần đây. Hoặc ra lệnh: "cho cá ăn", "đặt nhiệt độ 26", '
-      + '"chế độ tự động", "tắt hết", "làm lạnh 50%", "sưởi 30%".'
+    answer: 'Mình trả lời được: nhiệt độ hiện tại · cao nhất/thấp nhất · sai số PID · cho ăn mấy lần · sò/bơm chạy bao lâu · '
+      + 'điện năng và tiền điện · cảnh báo · offline lúc nào · lệnh gần đây. Hoặc ra lệnh: "cho cá ăn", "đặt nhiệt độ 27", '
+      + '"chế độ tự động", "tắt sò", "làm lạnh 50%", "bật bơm", "tắt bơm".'
   };
 }

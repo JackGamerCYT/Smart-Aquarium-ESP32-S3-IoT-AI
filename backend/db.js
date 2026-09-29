@@ -1,4 +1,4 @@
-// Kết nối PostgreSQL (Neon). Tự tạo bảng, tự thêm cột mới khi nâng cấp từ bản cũ (relay -> MOSFET/PID).
+// Kết nối PostgreSQL (Neon). Tự tạo bảng, tự thêm cột mới khi nâng cấp (relay -> PID -> v5 sò + bơm).
 import pg from 'pg';
 
 const SCHEMA = `
@@ -27,6 +27,8 @@ alter table telemetry add column if not exists pid_u  real;
 alter table telemetry add column if not exists pid_p  real;
 alter table telemetry add column if not exists pid_i  real;
 alter table telemetry add column if not exists pid_d  real;
+-- v5: bơm nước bật/tắt riêng (cột heat giữ lại cho dữ liệu cũ, bản mới không ghi)
+alter table telemetry add column if not exists pump   boolean;
 create index if not exists telemetry_time_idx on telemetry (ts_server desc);
 
 create table if not exists events (
@@ -66,7 +68,7 @@ create table if not exists settings (
   v text not null
 );
 insert into settings (k, v) values
-  ('tariff_vnd_per_kwh', '3000'), ('cool_w', '60'), ('heat_w', '10')
+  ('tariff_vnd_per_kwh', '3000'), ('cool_w', '60'), ('pump_w', '5')
 on conflict (k) do nothing;
 `;
 
@@ -99,7 +101,7 @@ export async function q(text, params = []) {
   return rows;
 }
 
-export const SETTING_KEYS = ['tariff_vnd_per_kwh', 'cool_w', 'heat_w'];
+export const SETTING_KEYS = ['tariff_vnd_per_kwh', 'cool_w', 'pump_w'];
 
 export async function getSettings() {
   const rows = await q('select k, v from settings');
@@ -107,7 +109,7 @@ export async function getSettings() {
   return {
     tariff_vnd_per_kwh: s.tariff_vnd_per_kwh ?? 3000,
     cool_w: s.cool_w ?? 60,
-    heat_w: s.heat_w ?? 10,
+    pump_w: s.pump_w ?? 5,
   };
 }
 
@@ -118,21 +120,23 @@ export async function setSetting(k, v) {
 // Thời điểm của 1 bản ghi: giờ thiết bị (đúng cả với bản ghi gửi bù), không có thì giờ server.
 export const TS = 'coalesce(ts_device, ts_server)';
 
-/** Điện năng ước tính trong N giờ: Σ (cool%·Psò + heat%·Psưởi) · Δt, Δt tối đa 120 s. */
+/** Điện năng ước tính trong N giờ: Σ (cool%·Psò + bơm_bật·Pbơm) · Δt, Δt tối đa 120 s.
+ *  Module sưởi USB tự điều khiển nên không tính được (ESP32 không biết lúc nào nó bật). */
 export async function energy(hours) {
   const s = await getSettings();
   const [r] = await q(
     `with x as (
-       select coalesce(cool,0) cool, coalesce(heat,0) heat,
+       select coalesce(cool,0) cool, case when pump then 1 else 0 end pump, (pump is not null)::int pump_known,
               least(extract(epoch from ${TS} - lag(${TS}) over (order by ${TS})), 120) dt
          from telemetry where ${TS} >= now() - make_interval(hours => $1))
      select coalesce(sum(cool/100.0 * $2 * coalesce(dt,0)), 0) / 3600.0 as cool_wh,
-            coalesce(sum(heat/100.0 * $3 * coalesce(dt,0)), 0) / 3600.0 as heat_wh,
+            coalesce(sum(pump * $3 * coalesce(dt,0)), 0) / 3600.0 as pump_wh,
             coalesce(sum(case when cool > 0 then coalesce(dt,0) else 0 end), 0) as cool_s,
-            coalesce(sum(case when heat > 0 then coalesce(dt,0) else 0 end), 0) as heat_s,
+            coalesce(sum(pump * coalesce(dt,0)), 0) as pump_s,
+            coalesce(sum(pump_known * coalesce(dt,0)), 0) as pump_known_s,
             coalesce(sum(coalesce(dt,0)), 0) as total_s
-       from x`, [hours, s.cool_w, s.heat_w]);
-  const cool_wh = Number(r.cool_wh), heat_wh = Number(r.heat_wh), wh = cool_wh + heat_wh;
-  return { wh, cool_wh, heat_wh, cost: wh / 1000 * s.tariff_vnd_per_kwh,
-           cool_s: Number(r.cool_s), heat_s: Number(r.heat_s), total_s: Number(r.total_s), settings: s };
+       from x`, [hours, s.cool_w, s.pump_w]);
+  const cool_wh = Number(r.cool_wh), pump_wh = Number(r.pump_wh), wh = cool_wh + pump_wh;
+  return { wh, cool_wh, pump_wh, cost: wh / 1000 * s.tariff_vnd_per_kwh,
+           cool_s: Number(r.cool_s), pump_s: Number(r.pump_s), pump_known_s: Number(r.pump_known_s), total_s: Number(r.total_s), settings: s };
 }

@@ -1,4 +1,4 @@
-// Backend Smart Aquarium (PID + MOSFET): MQTT ingest 24/7 + REST API + trợ lý dữ liệu.
+// Backend Smart Aquarium v5 (sò lạnh PID + bơm): MQTT ingest 24/7 + REST API + trợ lý dữ liệu.
 // Chạy trên Render (free) hoặc trên máy: node server.js
 import express from 'express';
 import { q, initDb, getSettings, setSetting, SETTING_KEYS, TS, energy } from './db.js';
@@ -64,7 +64,7 @@ app.get('/api/history', wrap(async (req, res) => {
             round(max(temp)::numeric,2)::float8 temp_max,
             round(avg(sp)::numeric,2)::float8 sp,
             round(avg(coalesce(cool,0))::numeric,1)::float8 cool,
-            round(avg(coalesce(heat,0))::numeric,1)::float8 heat,
+            round((100.0 * avg(case when pump then 1 when pump is null then null else 0 end))::numeric,0)::float8 pump,
             count(*)::int samples
        from telemetry where ${TS} >= now() - make_interval(hours => $1)
       group by 1 order by 1`, [hours, step]);
@@ -80,13 +80,14 @@ app.get('/api/stats', wrap(async (req, res) => {
             round((max(abs(temp - sp)) filter (where mode = 'AUTO'))::numeric,2)::float8 track_err_max,
             round((100.0 * avg(case when abs(temp - sp) <= 0.5 then 1 else 0 end) filter (where mode = 'AUTO'))::numeric,1)::float8 in_band_pct,
             round(avg(coalesce(cool,0))::numeric,1)::float8 cool_avg,
-            round(avg(coalesce(heat,0))::numeric,1)::float8 heat_avg,
+            round((100.0 * avg(case when pump then 1 when pump is null then null else 0 end))::numeric,1)::float8 pump_on_pct,
             count(*)::int samples, max(ts_server) last_seen,
             count(*) filter (where alarm is not null and alarm <> 'NONE')::int alarm_samples
        from telemetry where ${TS} >= now() - make_interval(hours => $1)`, [hours]);
   const [ev] = await q(
     `select count(*) filter (where type='feed')::int feeds, count(*) filter (where type='alarm')::int alarms,
-            count(*) filter (where type in ('pid','setpoint','mode'))::int tuning_changes
+            count(*) filter (where type in ('pid','setpoint','mode'))::int tuning_changes,
+            count(*) filter (where type='pump')::int pump_switches
        from events where ts_server >= now() - make_interval(hours => $1)`, [hours]);
   const [cmd] = await q(
     `select count(*)::int total, count(ts_ack)::int acked,
@@ -99,8 +100,8 @@ app.get('/api/stats', wrap(async (req, res) => {
        from availability where ts_server >= now() - make_interval(hours => $1)`, [hours]);
   const e = await energy(hours);
   res.json({ hours, temperature: t, events: ev, commands: cmd, availability: av,
-    energy_wh: +e.wh.toFixed(2), cool_wh: +e.cool_wh.toFixed(2), heat_wh: +e.heat_wh.toFixed(2), cost_vnd: Math.round(e.cost),
-    cool_runtime_min: Math.round(e.cool_s / 60), heat_runtime_min: Math.round(e.heat_s / 60), settings: e.settings,
+    energy_wh: +e.wh.toFixed(2), cool_wh: +e.cool_wh.toFixed(2), pump_wh: +e.pump_wh.toFixed(2), cost_vnd: Math.round(e.cost),
+    cool_runtime_min: Math.round(e.cool_s / 60), pump_runtime_min: Math.round(e.pump_s / 60), settings: e.settings,
     packets: { received: state.received, missed_seq: state.missedSeq,
       delivery_pct: state.received + state.missedSeq ? +(state.received / (state.received + state.missedSeq) * 100).toFixed(2) : null } });
 }));
@@ -125,15 +126,15 @@ app.get('/api/energy/daily', wrap(async (req, res) => {
   const s = await getSettings();
   const points = await q(
     `with x as (
-       select (${TS} at time zone 'Asia/Ho_Chi_Minh')::date as dcol, coalesce(cool,0) cool, coalesce(heat,0) heat,
+       select (${TS} at time zone 'Asia/Ho_Chi_Minh')::date as dcol, coalesce(cool,0) cool, case when pump then 1 else 0 end pump,
               least(extract(epoch from ${TS} - lag(${TS}) over (order by ${TS})), 120) dt
          from telemetry where ${TS} >= now() - make_interval(days => $1))
      select to_char(dcol,'YYYY-MM-DD') as day,
             round((sum(cool/100.0 * $2 * coalesce(dt,0))/3600.0)::numeric, 2)::float8 cool_wh,
-            round((sum(heat/100.0 * $3 * coalesce(dt,0))/3600.0)::numeric, 2)::float8 heat_wh
-       from x group by dcol order by dcol`, [days, s.cool_w, s.heat_w]);
-  res.json({ days, tariff: s.tariff_vnd_per_kwh, points: points.map(p => ({ ...p, wh: +(p.cool_wh + p.heat_wh).toFixed(2),
-    cost_vnd: Math.round((p.cool_wh + p.heat_wh) / 1000 * s.tariff_vnd_per_kwh) })) });
+            round((sum(pump * $3 * coalesce(dt,0))/3600.0)::numeric, 2)::float8 pump_wh
+       from x group by dcol order by dcol`, [days, s.cool_w, s.pump_w]);
+  res.json({ days, tariff: s.tariff_vnd_per_kwh, points: points.map(p => ({ ...p, wh: +(p.cool_wh + p.pump_wh).toFixed(2),
+    cost_vnd: Math.round((p.cool_wh + p.pump_wh) / 1000 * s.tariff_vnd_per_kwh) })) });
 }));
 
 app.get('/api/events', wrap(async (req, res) => {
@@ -155,8 +156,8 @@ app.get('/api/availability', wrap(async (req, res) => {
 }));
 
 // ---------------------------------------------------------------- điều khiển & cấu hình
-const CMD_DEVICES = ['mode', 'setpoint', 'pid', 'pid_reset', 'cool', 'heat', 'feed', 'schedule', 'time', 'oled', 'ping'];
-const CMD_FIELDS = ['action', 'value', 'kp', 'ki', 'kd', 'db', 'cool_max', 'heat_max', 'slots', 'epoch'];
+const CMD_DEVICES = ['mode', 'setpoint', 'pid', 'pid_reset', 'cool', 'pump', 'feed', 'schedule', 'time', 'oled', 'ping'];
+const CMD_FIELDS = ['action', 'value', 'kp', 'ki', 'kd', 'db', 'cool_max', 'heater_sp', 'cool_need_pump', 'slots', 'epoch'];
 app.post('/api/command', wrap(async (req, res) => {
   const b = req.body || {};
   if (!CMD_DEVICES.includes(b.device)) return res.status(400).json({ error: `"device" phải là: ${CMD_DEVICES.join(', ')}` });
@@ -176,7 +177,7 @@ app.put('/api/settings', wrap(async (req, res) => {
 
 // ---------------------------------------------------------------- CSV & chatbot
 const CSV = {
-  telemetry: ['ts_server', 'ts_device', 'device_id', 'seq', 'temp', 'sp', 'mode', 'cool', 'heat',
+  telemetry: ['ts_server', 'ts_device', 'device_id', 'seq', 'temp', 'sp', 'mode', 'cool', 'pump',
               'pid_u', 'pid_p', 'pid_i', 'pid_d', 'feed_today', 'alarm', 'rssi', 'safe_mode', 'buffered'],
   events: ['ts_server', 'ts_device', 'type', 'detail'],
   commands: ['ts_sent', 'source', 'cmd_id', 'payload', 'ts_ack', 'ack_ok', 'ack_msg', 'latency_ms'],
@@ -198,7 +199,7 @@ app.get('/api/export/:table.csv', wrap(async (req, res) => {
 
 app.post('/api/chat', wrap(async (req, res) => res.json(await answer(req.body?.question || ''))));
 
-app.get('/', (req, res) => res.json({ service: 'smart-aquarium-backend', version: '4.0', docs: '/api/health' }));
+app.get('/', (req, res) => res.json({ service: 'smart-aquarium-backend', version: '5.0', docs: '/api/health' }));
 
 // ---------------------------------------------------------------- dọn dữ liệu cũ
 async function purge() {

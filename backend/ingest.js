@@ -25,11 +25,11 @@ const txt = (v, n) => (typeof v === 'string' && v ? v.slice(0, n) : null);
 
 async function saveTelemetry(d) {
   await q(
-    `insert into telemetry (ts_device, device_id, seq, temp, sp, mode, cool, heat, pid_u, pid_p, pid_i, pid_d,
+    `insert into telemetry (ts_device, device_id, seq, temp, sp, mode, cool, pump, pid_u, pid_p, pid_i, pid_d,
                             feed_today, feed_total, alarm, rssi, time_src, safe_mode, buffered, uptime_s)
      values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
     [ts(d.ts), txt(d.dev, 40) || 'aquarium', num(d.seq), num(d.temp), num(d.sp), txt(d.mode, 8),
-     num(d.cool), num(d.heat), num(d.pid_u), num(d.pid_p), num(d.pid_i), num(d.pid_d),
+     num(d.cool), bool(d.pump), num(d.pid_u), num(d.pid_p), num(d.pid_i), num(d.pid_d),
      num(d.feed_today), num(d.feed_count), txt(d.alarm, 20), num(d.rssi), txt(d.time_src, 6),
      bool(d.safe_mode), !!d.buffered, num(d.uptime)]);
   state.stored++;

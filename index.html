@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Smart Aquarium PID – Dashboard v6</title>
+<title>Smart Aquarium – Sò lạnh PID + Bơm – Dashboard v7</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mqtt@5.10.1/dist/mqtt.min.js"></script>
@@ -27,6 +27,8 @@
   .seg.on-AUTO{background:#0891b2;color:#fff;border-color:#22d3ee}
   .seg.on-MANUAL{background:#ea580c;color:#fff;border-color:#fb923c}
   .seg.on-OFF{background:#475569;color:#fff;border-color:#94a3b8}
+  .seg.on-ON{background:#059669;color:#fff;border-color:#34d399}
+  .seg.on-PUMPOFF{background:#be123c;color:#fff;border-color:#fb7185}
   .bar{height:8px;border-radius:99px;background:#0f172a;overflow:hidden}
   .bar>div{height:100%;border-radius:99px;transition:width .4s}
   table{width:100%;font-size:12px}th{text-align:left;color:#94a3b8;font-weight:600;padding:4px 6px}
@@ -39,8 +41,8 @@
   <!-- ============================ HEADER ============================ -->
   <header class="card flex flex-col lg:flex-row gap-3 justify-between lg:items-center">
     <div>
-      <h1 class="text-xl md:text-2xl font-bold text-cyan-400">🐠 Smart Aquarium – Điều khiển nhiệt PID</h1>
-      <p class="text-slate-400 text-xs mt-1">ESP32-S3 · DS18B20 · 2×MOSFET IRLZ44N (sò lạnh 12V + lõi sưởi 5V) · Servo cho ăn · OLED · MQTT
+      <h1 class="text-xl md:text-2xl font-bold text-cyan-400">🐠 Smart Aquarium – Sò lạnh PID + Bơm nước</h1>
+      <p class="text-slate-400 text-xs mt-1">ESP32-S3 · DS18B20 (cổng SERVO 2) · Q1/C1 bơm nước · Q2/C2 sò lạnh 12V · sưởi USB 5W tự giữ nhiệt · Servo cho ăn · OLED · MQTT
         <span id="topic-lbl" class="font-mono"></span> · FW <span id="fw">--</span></p>
     </div>
     <div class="flex flex-wrap gap-2 items-center text-xs">
@@ -58,16 +60,18 @@
     <div class="card"><p class="lbl">Nhiệt độ nước</p>
       <p class="text-3xl font-black text-cyan-400 mt-1"><span id="k-temp">--</span><span class="text-sm text-slate-400 font-normal"> °C</span></p>
       <p class="text-xs text-slate-400 mt-1">Đặt <b id="k-sp">--</b> °C · lệch <b id="k-err">--</b></p></div>
-    <div class="card"><p class="lbl">❄️ Sò lạnh (Q1 · GPIO4)</p>
+    <div class="card"><p class="lbl">❄️ Sò lạnh (Q2 · C2 · GPIO5)</p>
       <p class="text-3xl font-black text-sky-400 mt-1"><span id="k-cool">--</span><span class="text-sm text-slate-400 font-normal"> %</span></p>
-      <div class="bar mt-2"><div id="bar-cool" class="bg-sky-400" style="width:0"></div></div></div>
-    <div class="card"><p class="lbl">🔥 Lõi sưởi (Q2 · GPIO5)</p>
-      <p class="text-3xl font-black text-orange-400 mt-1"><span id="k-heat">--</span><span class="text-sm text-slate-400 font-normal"> %</span></p>
-      <div class="bar mt-2"><div id="bar-heat" class="bg-orange-400" style="width:0"></div></div></div>
-    <div class="card"><p class="lbl">PID – đầu ra u</p>
+      <div class="bar mt-2"><div id="bar-cool" class="bg-sky-400" style="width:0"></div></div>
+      <p id="k-block" class="text-[11px] text-amber-300 mt-1 min-h-4"></p></div>
+    <div class="card"><p class="lbl">💧 Bơm nước (Q1 · C1 · GPIO4)</p>
+      <p class="text-3xl font-black mt-1"><span id="k-pump" class="text-slate-400">--</span></p>
+      <p class="text-xs text-slate-400 mt-1">🔥 Sưởi USB tự giữ <b id="k-hsp">--</b> °C</p>
+      <p class="text-[11px] text-slate-500">(ESP32 không điều khiển sưởi)</p></div>
+    <div class="card"><p class="lbl">PID sò – đầu ra u</p>
       <p class="text-2xl font-black text-violet-300 mt-1"><span id="k-u">--</span><span class="text-sm text-slate-400 font-normal"> %</span></p>
       <p class="text-xs text-slate-400 mt-1 font-mono">P <b id="k-p">--</b> · I <b id="k-i">--</b> · D <b id="k-d">--</b></p>
-      <p class="text-[11px] text-slate-500">u&gt;0 sưởi · u&lt;0 làm lạnh</p></div>
+      <p class="text-[11px] text-slate-500">u ≤ 0 · |u| = % PWM sò lạnh</p></div>
     <div class="card"><p class="lbl">Cho ăn hôm nay / tổng</p>
       <p class="text-2xl font-black text-amber-400 mt-1"><span id="k-feed">0</span> / <span id="k-feedtot">0</span></p>
       <p class="text-xs text-slate-400 mt-1">Kế tiếp <b id="k-next">--:--</b> · <span id="k-feeding"></span></p></div>
@@ -81,7 +85,7 @@
     <!-- ============================ CHART ============================ -->
     <div class="card lg:col-span-2">
       <div class="flex flex-wrap justify-between items-center gap-2 mb-2">
-        <h2 class="font-bold">📈 Nhiệt độ · điểm đặt · công suất sò / sưởi</h2>
+        <h2 class="font-bold">📈 Nhiệt độ · điểm đặt · sò lạnh · bơm</h2>
         <div id="range-tabs" class="flex flex-wrap gap-1">
           <button class="tab on" data-range="live">Live</button><button class="tab" data-range="1">1 giờ</button>
           <button class="tab" data-range="6">6 giờ</button><button class="tab" data-range="24">24 giờ</button>
@@ -96,34 +100,39 @@
     <div class="card space-y-3">
       <h2 class="font-bold">🎛️ Điều khiển</h2>
       <div>
-        <p class="lbl mb-1">Chế độ</p>
+        <p class="lbl mb-1">💧 Bơm nước (kênh C1)</p>
+        <div id="pump-seg" class="flex gap-2">
+          <button class="seg" data-pump="ON">BẬT BƠM</button>
+          <button class="seg" data-pump="OFF">TẮT BƠM</button>
+        </div>
+        <p id="pump-note" class="text-[11px] text-slate-400 mt-1 min-h-4"></p>
+      </div>
+      <div>
+        <p class="lbl mb-1">❄️ Sò lạnh (kênh C2)</p>
         <div id="mode-seg" class="flex gap-2">
           <button class="seg" data-mode="AUTO">AUTO (PID)</button>
           <button class="seg" data-mode="MANUAL">MANUAL</button>
-          <button class="seg" data-mode="OFF">OFF</button>
+          <button class="seg" data-mode="OFF">TẮT SÒ</button>
         </div>
         <p id="mode-note" class="text-[11px] text-slate-400 mt-1 min-h-4"></p>
       </div>
 
       <div class="bg-slate-900/70 border border-slate-700 rounded-xl p-3 space-y-2">
-        <p class="lbl">Nhiệt độ mong muốn (20 – 32 °C)</p>
+        <p class="lbl">Nhiệt độ làm lạnh (<span id="sp-range">26.5 – 32</span> °C)</p>
         <div class="flex gap-2 items-center">
           <button id="sp-dn" class="btn bg-slate-700 hover:bg-slate-600">−0.5</button>
-          <input id="c-sp" type="number" step="0.1" min="20" max="32" class="text-center text-lg font-bold">
+          <input id="c-sp" type="number" step="0.1" min="26.5" max="32" class="text-center text-lg font-bold">
           <button id="sp-up" class="btn bg-slate-700 hover:bg-slate-600">+0.5</button>
         </div>
         <button id="c-sp-save" class="btn bg-cyan-600 hover:bg-cyan-500 w-full">Áp dụng nhiệt độ đặt</button>
+        <p class="text-[11px] text-slate-500">Nước nóng hơn mức này thì sò làm lạnh. Mức đặt phải cao hơn nhiệt sưởi USB ít nhất 0,5 °C để sò và sưởi không chạy ngược nhau.</p>
       </div>
 
       <div class="bg-slate-900/70 border border-slate-700 rounded-xl p-3 space-y-2">
-        <p class="lbl">Chạy tay (chuyển MANUAL 30 phút)</p>
+        <p class="lbl">Chạy sò tay (chuyển MANUAL 30 phút)</p>
         <div class="text-xs flex justify-between"><span>❄️ Sò lạnh</span><b id="m-cool-v">0%</b></div>
         <div class="flex gap-2 items-center"><input id="m-cool" type="range" min="0" max="100" step="5" value="0">
           <button id="m-cool-go" class="btn bg-sky-600 hover:bg-sky-500 text-xs">Gửi</button></div>
-        <div class="text-xs flex justify-between"><span>🔥 Lõi sưởi</span><b id="m-heat-v">0%</b></div>
-        <div class="flex gap-2 items-center"><input id="m-heat" type="range" min="0" max="100" step="5" value="0">
-          <button id="m-heat-go" class="btn bg-orange-600 hover:bg-orange-500 text-xs">Gửi</button></div>
-        <p class="text-[11px] text-slate-500">Bật cái này thì cái kia tự về 0 – sò và sưởi không bao giờ chạy cùng lúc.</p>
       </div>
 
       <button id="btn-feed" class="btn bg-amber-500 hover:bg-amber-400 text-slate-950 w-full py-3">🍤 CHO CÁ ĂN NGAY</button>
@@ -142,8 +151,10 @@
         <label>Kd <span class="text-slate-500">%·s/°C</span><input id="p-kd" type="number" step="10" min="0" max="5000"></label>
         <label>Vùng chết <span class="text-slate-500">°C</span><input id="p-db" type="number" step="0.05" min="0" max="2"></label>
         <label>Sò tối đa <span class="text-slate-500">%</span><input id="p-cmax" type="number" step="5" min="0" max="100"></label>
-        <label>Sưởi tối đa <span class="text-slate-500">%</span><input id="p-hmax" type="number" step="5" min="0" max="100"></label>
+        <label>Nhiệt sưởi USB <span class="text-slate-500">°C</span><input id="p-hsp" type="number" step="0.5" min="18" max="30"></label>
       </div>
+      <label class="flex items-center gap-2"><input id="p-needpump" type="checkbox" class="w-auto">
+        <span>Chỉ cho sò chạy khi bơm đang bật <span class="text-slate-500">(nên bật nếu sò làm lạnh qua đường nước của bơm)</span></span></label>
       <div class="grid grid-cols-3 gap-2">
         <button id="p-save" class="btn bg-violet-600 hover:bg-violet-500 col-span-1">Áp dụng</button>
         <button id="p-reset" class="btn bg-slate-700 hover:bg-slate-600">Xóa tích phân</button>
@@ -154,8 +165,9 @@
         <div class="flex justify-between"><span>I</span><span id="pb-i-v" class="font-mono">--</span></div><div class="bar"><div id="pb-i" class="bg-fuchsia-400"></div></div>
         <div class="flex justify-between"><span>D</span><span id="pb-d-v" class="font-mono">--</span></div><div class="bar"><div id="pb-d" class="bg-pink-400"></div></div>
       </div>
-      <details class="text-slate-400"><summary class="cursor-pointer text-slate-300 font-semibold">Cách chỉnh PID cho bể 4.5 L</summary>
+      <details class="text-slate-400"><summary class="cursor-pointer text-slate-300 font-semibold">Cách chỉnh PID sò lạnh</summary>
         <ol class="list-decimal ml-4 mt-1 space-y-1">
+          <li>“Nhiệt sưởi USB” là mức module sưởi tự giữ (mặc định 26 °C) – chỉ để web chặn đặt nhiệt thấp hơn mức đó.</li>
           <li>Bắt đầu Ki = 0, Kd = 0, tăng Kp đến khi nhiệt độ dao động nhẹ quanh điểm đặt, rồi giảm Kp còn khoảng 60%.</li>
           <li>Tăng Ki từ 0.005 để xóa sai lệch còn lại. Vọt lố nhiều hoặc dao động chậm → giảm Ki.</li>
           <li>Kd thường để 0 (nước đổi nhiệt rất chậm, DS18B20 bước 0.0625 °C gây nhiễu đạo hàm).</li>
@@ -174,7 +186,8 @@
       <div class="bg-slate-900/70 border border-slate-700 rounded-xl p-3 space-y-2">
         <p class="font-semibold text-sm">🔧 Chẩn đoán</p>
         <div class="grid grid-cols-2 gap-y-1 items-center">
-          <span class="text-slate-400">DS18B20 (GPIO6)</span><span id="hw-ds" class="pill mute justify-self-start">?</span>
+          <span class="text-slate-400">DS18B20 (SERVO 2 · GPIO6)</span><span id="hw-ds" class="pill mute justify-self-start">?</span>
+          <span class="text-slate-400">Bơm (C1 · GPIO4)</span><span id="hw-pump" class="font-mono">--</span>
           <span class="text-slate-400">OLED 0x3C</span><span id="hw-oled" class="pill mute justify-self-start">?</span>
           <span class="text-slate-400">RAM trống</span><span id="hw-heap" class="font-mono">--</span>
           <span class="text-slate-400">Chạy liên tục</span><span id="hw-up" class="font-mono">--</span>
@@ -196,18 +209,18 @@
         <div class="bg-slate-900/70 rounded-lg p-2"><p class="lbl">TB / min / max</p><p class="text-base font-bold"><span id="s-avg">--</span> °C</p><p class="text-slate-400"><span id="s-min">--</span> – <span id="s-max">--</span></p></div>
         <div class="bg-slate-900/70 rounded-lg p-2"><p class="lbl">Sai số bám (AUTO)</p><p class="text-base font-bold"><span id="s-err">--</span> °C</p><p class="text-slate-400">max <span id="s-errmax">--</span> · ±0.5°C <span id="s-band">--</span>%</p></div>
         <div class="bg-slate-900/70 rounded-lg p-2"><p class="lbl">Sò lạnh TB</p><p class="text-base font-bold text-sky-300"><span id="s-cool">--</span> %</p><p class="text-slate-400"><span id="s-coolmin">--</span> phút chạy</p></div>
-        <div class="bg-slate-900/70 rounded-lg p-2"><p class="lbl">Lõi sưởi TB</p><p class="text-base font-bold text-orange-300"><span id="s-heat">--</span> %</p><p class="text-slate-400"><span id="s-heatmin">--</span> phút chạy</p></div>
+        <div class="bg-slate-900/70 rounded-lg p-2"><p class="lbl">Bơm bật</p><p class="text-base font-bold text-emerald-300"><span id="s-pump">--</span> %</p><p class="text-slate-400"><span id="s-pumpmin">--</span> phút · <span id="s-pumpsw">0</span> lần bật/tắt</p></div>
         <div class="bg-slate-900/70 rounded-lg p-2 col-span-2"><p class="lbl">Điện năng ước tính</p>
           <p class="text-base font-bold text-emerald-300"><span id="s-wh">--</span> Wh ≈ <span id="s-cost">--</span> đ</p>
-          <p class="text-slate-400">sò <span id="s-coolwh">--</span> Wh · sưởi <span id="s-heatwh">--</span> Wh</p></div>
+          <p class="text-slate-400">sò <span id="s-coolwh">--</span> Wh · bơm <span id="s-pumpwh">--</span> Wh</p></div>
       </div>
       <div class="grid grid-cols-3 gap-2">
         <label>Sò (W)<input id="set-cool" type="number" min="0"></label>
-        <label>Sưởi (W)<input id="set-heat" type="number" min="0"></label>
+        <label>Bơm (W)<input id="set-pump" type="number" min="0"></label>
         <label>đ/kWh<input id="set-tariff" type="number" min="0"></label>
       </div>
       <button id="set-save" class="btn bg-emerald-700 hover:bg-emerald-600 w-full">Lưu thông số tính điện</button>
-      <p class="text-slate-500">Điện năng = Σ (% PWM sò × W sò + % PWM sưởi × W sưởi) × thời gian.</p>
+      <p class="text-slate-500">Điện năng = Σ (% PWM sò × W sò + bơm bật × W bơm) × thời gian. Sưởi USB tự bật/tắt nên không tính được (tối đa ≈ 5 W × 24 h = 120 Wh/ngày).</p>
     </div>
   </section>
 
@@ -221,7 +234,7 @@
     <div class="card">
       <div class="flex justify-between items-center mb-2"><h2 class="font-bold">🗒️ Sự kiện</h2>
         <select id="ev-filter" class="w-40"><option value="">Tất cả</option><option>feed</option><option>alarm</option><option>recovered</option>
-          <option>mode</option><option>setpoint</option><option>pid</option><option>schedule</option><option>time_sync</option><option>boot</option></select></div>
+          <option>pump</option><option>mode</option><option>setpoint</option><option>pid</option><option>schedule</option><option>time_sync</option><option>boot</option></select></div>
       <div class="scroll max-h-72 overflow-y-auto"><table><thead><tr><th>Thời gian</th><th>Loại</th><th>Chi tiết</th></tr></thead><tbody id="ev-body"></tbody></table></div>
     </div>
     <div class="card">
@@ -236,7 +249,7 @@
       <h2 class="font-bold mb-2">💬 Trợ lý dữ liệu (truy vấn thẳng database)</h2>
       <div id="chat-quick" class="flex flex-wrap gap-1 mb-2"></div>
       <div id="chat-log" class="scroll flex-1 min-h-40 max-h-72 overflow-y-auto space-y-2 text-sm mb-2"></div>
-      <div class="flex gap-2"><input id="chat-in" placeholder="Ví dụ: sai số PID hôm nay · đặt nhiệt độ 25.5 · làm lạnh 40%"><button id="chat-send" class="btn bg-teal-600 hover:bg-teal-500">Gửi</button></div>
+      <div class="flex gap-2"><input id="chat-in" placeholder="Ví dụ: sai số PID hôm nay · đặt nhiệt độ 27 · làm lạnh 40% · tắt bơm"><button id="chat-send" class="btn bg-teal-600 hover:bg-teal-500">Gửi</button></div>
     </div>
     <!-- ============================ ĐO ĐẠC / CÀI ĐẶT ============================ -->
     <div class="card space-y-3 text-xs">
@@ -279,7 +292,8 @@
 const TOPIC_DEFAULT  = 'smartaquarium_node2026';                        // trùng firmware + backend
 const DEFAULT_API    = 'https://smart-aquarium-backend.onrender.com';   // URL Render của nhóm
 const BROKER_DEFAULT = 'wss://broker.hivemq.com:8884/mqtt';
-const PID_DEFAULT = { kp: 60, ki: 0.01, kd: 0, db: 0.1, cool_max: 100, heat_max: 100 };
+const PID_DEFAULT = { kp: 60, ki: 0.01, kd: 0, db: 0.1, cool_max: 100, heater_sp: 26, cool_need_pump: true };
+const HEATER_GAP = 0.5;
 const ACK_TIMEOUT_MS = 6000, STALE_MS = 8000, RT_POINTS = 180;
 
 const $ = id => document.getElementById(id);
@@ -318,7 +332,7 @@ const tempChart = new Chart($('chart-temp'), {
     { type: 'line', label: 'Min', data: [], borderColor: 'transparent', pointRadius: 0, yAxisID: 'y', order: 2 },
     { type: 'line', label: 'Điểm đặt', data: [], borderColor: '#a78bfa', borderDash: [6, 4], borderWidth: 1.5, pointRadius: 0, stepped: true, yAxisID: 'y', order: 0 },
     { type: 'line', label: 'Sò lạnh (%)', data: [], borderColor: '#38bdf8', backgroundColor: 'rgba(56,189,248,.18)', fill: 'origin', borderWidth: 1, pointRadius: 0, stepped: true, yAxisID: 'y2', order: 3 },
-    { type: 'line', label: 'Lõi sưởi (%)', data: [], borderColor: '#fb923c', backgroundColor: 'rgba(251,146,60,.18)', fill: 'origin', borderWidth: 1, pointRadius: 0, stepped: true, yAxisID: 'y2', order: 3 },
+    { type: 'line', label: 'Bơm bật (%)', data: [], borderColor: '#34d399', borderWidth: 1.5, borderDash: [3, 3], pointRadius: 0, stepped: true, yAxisID: 'y2', order: 3 },
   ]},
   options: { responsive: true, maintainAspectRatio: false, animation: false, interaction: { mode: 'index', intersect: false },
     plugins: { legend: { labels: { boxWidth: 12, filter: i => !['Max', 'Min'].includes(i.text) } } },
@@ -334,7 +348,7 @@ const feedChart = new Chart($('chart-feed'), {
 });
 const energyChart = new Chart($('chart-energy'), {
   type: 'bar', data: { labels: [], datasets: [
-    { label: 'Sò lạnh (Wh)', data: [], backgroundColor: '#38bdf8' }, { label: 'Lõi sưởi (Wh)', data: [], backgroundColor: '#fb923c' }] },
+    { label: 'Sò lạnh (Wh)', data: [], backgroundColor: '#38bdf8' }, { label: 'Bơm (Wh)', data: [], backgroundColor: '#34d399' }] },
   options: { responsive: true, maintainAspectRatio: false, animation: false,
     plugins: { title: { display: true, text: 'Điện năng ước tính theo ngày' },
       tooltip: { callbacks: { footer: items => `Tổng ≈ ${S.days?.[items[0].dataIndex]?.cost_vnd ?? '--'} đ` } } },
@@ -345,7 +359,7 @@ function pushLive(label, d) {
   const L = tempChart.data.labels, ds = tempChart.data.datasets;
   L.push(label);
   ds[0].data.push(d.temp); ds[1].data.push(null); ds[2].data.push(null);
-  ds[3].data.push(d.sp ?? null); ds[4].data.push(d.cool ?? 0); ds[5].data.push(d.heat ?? 0);
+  ds[3].data.push(d.sp ?? null); ds[4].data.push(d.cool ?? 0); ds[5].data.push(d.pump === undefined ? null : d.pump ? 100 : 0);
   while (L.length > RT_POINTS) { L.shift(); ds.forEach(x => x.data.shift()); }
   tempChart.update();
 }
@@ -392,7 +406,7 @@ function onMessage(kind, text) {
   }
   render(d);
   if (d.temp != null) pushLive(d.time ? d.time.slice(11) : timeStr(), d);
-  log('TEL', `#${d.seq} T=${f(d.temp, 2)}°C SP=${f(d.sp)} ${d.mode} lạnh=${f(d.cool, 0)}% nóng=${f(d.heat, 0)}% u=${f(d.pid_u)}`, 'text-cyan-300');
+  log('TEL', `#${d.seq} T=${f(d.temp, 2)}°C SP=${f(d.sp)} ${d.mode} sò=${f(d.cool, 0)}% bơm=${d.pump ? 'BẬT' : 'TẮT'} u=${f(d.pid_u)}`, 'text-cyan-300');
 }
 
 function render(d) {
@@ -400,7 +414,19 @@ function render(d) {
   $('k-sp').textContent = f(d.sp);
   $('k-err').textContent = d.temp == null ? '--' : (d.temp - d.sp >= 0 ? '+' : '') + f(d.temp - d.sp, 2) + ' °C';
   $('k-cool').textContent = f(d.cool, 0); $('bar-cool').style.width = (d.cool || 0) + '%';
-  $('k-heat').textContent = f(d.heat, 0); $('bar-heat').style.width = (d.heat || 0) + '%';
+  const pumpOn = !!d.pump;
+  $('k-pump').textContent = d.pump === undefined ? '--' : pumpOn ? 'BẬT' : 'TẮT';
+  $('k-pump').className = d.pump === undefined ? 'text-slate-400' : pumpOn ? 'text-emerald-400' : 'text-rose-400';
+  $('k-hsp').textContent = f(d.heater_sp);
+  $('k-block').textContent = BLOCK_TEXT[d.cool_block] || '';
+  document.querySelectorAll('#pump-seg .seg').forEach(b => b.className = 'seg' + ((b.dataset.pump === 'ON') === pumpOn && d.pump !== undefined ? (pumpOn ? ' on-ON' : ' on-PUMPOFF') : ''));
+  $('pump-note').textContent = d.pump === undefined ? '' : pumpOn ? `Bơm đang chạy (${d.pump_pct ?? 100}%).`
+    : 'Bơm đang TẮT' + (d.cool_need_pump ? ' → sò lạnh tạm khóa theo bơm.' : '.');
+  $('hw-pump').textContent = d.pump === undefined ? '--' : (pumpOn ? 'BẬT ' : 'TẮT ') + (d.pump_pct ?? '') + '%';
+  if (d.sp_min !== undefined) {
+    $('sp-range').textContent = `${f(d.sp_min)} – ${f(d.sp_max ?? 32, 0)}`;
+    $('c-sp').min = d.sp_min; $('c-sp').max = d.sp_max ?? 32;
+  }
   $('k-u').textContent = (d.pid_u > 0 ? '+' : '') + f(d.pid_u);
   $('k-p').textContent = f(d.pid_p); $('k-i').textContent = f(d.pid_i); $('k-d').textContent = f(d.pid_d);
   $('k-feed').textContent = d.feed_today ?? 0; $('k-feedtot').textContent = d.feed_count ?? 0;
@@ -411,14 +437,15 @@ function render(d) {
   $('fw').textContent = d.fw ?? '--';
 
   document.querySelectorAll('#mode-seg .seg').forEach(b => b.className = 'seg' + (b.dataset.mode === d.mode ? ' on-' + d.mode : ''));
-  $('mode-note').textContent = d.mode === 'AUTO' ? 'PID tự điều khiển sò lạnh / lõi sưởi theo nhiệt độ đặt.'
-    : d.mode === 'MANUAL' ? `Chạy tay: sò ${f(d.man_cool, 0)}%, sưởi ${f(d.man_heat, 0)}% · tự về AUTO sau ${Math.ceil((d.manual_left_s ?? 0) / 60)} phút`
-    : 'Tắt cả sò lạnh và lõi sưởi.';
+  $('mode-note').textContent = d.mode === 'AUTO' ? 'PID tự chạy sò khi nước nóng hơn nhiệt độ đặt.'
+    : d.mode === 'MANUAL' ? `Chạy tay: sò ${f(d.man_cool, 0)}% · tự về AUTO sau ${Math.ceil((d.manual_left_s ?? 0) / 60)} phút`
+    : 'Sò lạnh TẮT hẳn (kể cả khi nước ≥ 31 °C). Bơm không bị ảnh hưởng.';
   setIfIdle($('c-sp'), d.sp);
   setIfIdle($('c-sched'), d.schedule);
   if (d.kp !== undefined) {
     setIfIdle($('p-kp'), d.kp); setIfIdle($('p-ki'), d.ki); setIfIdle($('p-kd'), d.kd);
-    setIfIdle($('p-db'), d.db); setIfIdle($('p-cmax'), d.cool_max); setIfIdle($('p-hmax'), d.heat_max);
+    setIfIdle($('p-db'), d.db); setIfIdle($('p-cmax'), d.cool_max); setIfIdle($('p-hsp'), d.heater_sp);
+    if (document.activeElement !== $('p-needpump') && d.cool_need_pump !== undefined) $('p-needpump').checked = !!d.cool_need_pump;
     pill($('pid-sync'), 'ok', `Kp ${d.kp} · Ki ${d.ki} · Kd ${d.kd}`);
   }
   const bar = (id, v) => { $(id).style.width = Math.min(100, Math.abs(v || 0)) + '%'; $(id + '-v').textContent = f(v); };
@@ -464,28 +491,36 @@ function btnCmd(btn, body, label, outId = 'c-status') {
 
 // ---- nút điều khiển ------------------------------------------------------------
 $('mode-seg').onclick = e => { const b = e.target.closest('[data-mode]'); if (b) btnCmd(b, { device: 'mode', action: b.dataset.mode }, 'Chế độ'); };
-$('sp-dn').onclick = () => $('c-sp').value = (Number($('c-sp').value || 26) - 0.5).toFixed(1);
-$('sp-up').onclick = () => $('c-sp').value = (Number($('c-sp').value || 26) + 0.5).toFixed(1);
+$('pump-seg').onclick = e => {
+  const b = e.target.closest('[data-pump]'); if (!b) return;
+  if (b.dataset.pump === 'OFF' && S.tele?.cool_need_pump && S.tele?.cool > 0 &&
+      !confirm('Tắt bơm sẽ tạm khóa sò lạnh (đang chạy). Tiếp tục?')) return;
+  btnCmd(b, { device: 'pump', action: b.dataset.pump }, 'Bơm');
+};
+const spMin = () => S.tele?.sp_min ?? (Number($('p-hsp').value || 26) + HEATER_GAP), spMax = () => S.tele?.sp_max ?? 32;
+$('sp-dn').onclick = () => $('c-sp').value = Math.max(spMin(), Number($('c-sp').value || 27) - 0.5).toFixed(1);
+$('sp-up').onclick = () => $('c-sp').value = Math.min(spMax(), Number($('c-sp').value || 27) + 0.5).toFixed(1);
 $('c-sp-save').onclick = e => {
   const v = parseFloat($('c-sp').value);
-  if (!(v >= 20 && v <= 32)) { $('c-status').textContent = '❌ Nhiệt độ đặt phải trong 20 – 32 °C'; return; }
+  if (!(v >= spMin() - 0.001 && v <= spMax())) { $('c-status').textContent = `❌ Nhiệt độ đặt phải trong ${f(spMin())} – ${f(spMax(), 0)} °C (cao hơn nhiệt sưởi USB ≥ 0,5 °C)`; return; }
   btnCmd(e.currentTarget, { device: 'setpoint', value: Math.round(v * 10) / 10 }, 'Nhiệt độ đặt');
 };
-for (const k of ['cool', 'heat']) {
-  $('m-' + k).oninput = () => $(`m-${k}-v`).textContent = $('m-' + k).value + '%';
-  $(`m-${k}-go`).onclick = e => btnCmd(e.currentTarget, { device: k, value: Number($('m-' + k).value) }, k === 'cool' ? 'Sò lạnh' : 'Lõi sưởi');
-}
+$('m-cool').oninput = () => $('m-cool-v').textContent = $('m-cool').value + '%';
+$('m-cool-go').onclick = e => btnCmd(e.currentTarget, { device: 'cool', value: Number($('m-cool').value) }, 'Sò lạnh');
 $('btn-feed').onclick = e => btnCmd(e.currentTarget, { device: 'feed' }, 'Cho ăn');
 $('p-save').onclick = e => {
   const body = { device: 'pid', kp: +$('p-kp').value, ki: +$('p-ki').value, kd: +$('p-kd').value,
-                 db: +$('p-db').value, cool_max: +$('p-cmax').value, heat_max: +$('p-hmax').value };
+                 db: +$('p-db').value, cool_max: +$('p-cmax').value, heater_sp: +$('p-hsp').value };
   if (Object.values(body).slice(1).some(v => isNaN(v) || v < 0)) { $('c-status').textContent = '❌ Tham số PID không hợp lệ'; return; }
+  if (body.heater_sp < 18 || body.heater_sp > 30) { $('c-status').textContent = '❌ Nhiệt sưởi USB phải trong 18 – 30 °C'; return; }
+  body.cool_need_pump = $('p-needpump').checked;
   btnCmd(e.currentTarget, body, 'PID');
 };
 $('p-reset').onclick = e => btnCmd(e.currentTarget, { device: 'pid_reset' }, 'PID');
 $('p-def').onclick = () => {
   $('p-kp').value = PID_DEFAULT.kp; $('p-ki').value = PID_DEFAULT.ki; $('p-kd').value = PID_DEFAULT.kd;
-  $('p-db').value = PID_DEFAULT.db; $('p-cmax').value = PID_DEFAULT.cool_max; $('p-hmax').value = PID_DEFAULT.heat_max;
+  $('p-db').value = PID_DEFAULT.db; $('p-cmax').value = PID_DEFAULT.cool_max; $('p-hsp').value = PID_DEFAULT.heater_sp;
+  $('p-needpump').checked = PID_DEFAULT.cool_need_pump;
   $('c-status').textContent = 'Đã điền tham số mặc định – bấm “Áp dụng” để gửi.';
 };
 $('c-sched-save').onclick = e => {
@@ -499,12 +534,15 @@ document.querySelectorAll('[data-oled]').forEach(b => b.onclick = () => btnCmd(b
 // ===================================================================================
 // CẢNH BÁO & ĐO ĐẠC
 // ===================================================================================
-const ALARM_TEXT = { SENSOR_FAULT: 'Mất cảm biến DS18B20 – sò lạnh và lõi sưởi đã bị TẮT',
-  TEMP_HIGH: 'Nước quá nóng (≥ 31 °C) – cấm sưởi, sò lạnh chạy tối đa', TEMP_LOW: 'Nước quá lạnh (≤ 20 °C) – cấm làm lạnh, sưởi tối đa',
+const BLOCK_TEXT = { OFF: '⏸ Sò đang ở chế độ TẮT', SENSOR: '⚠️ Khóa: mất cảm biến nhiệt', PUMP_OFF: '⚠️ Khóa: bơm đang TẮT',
+  COLD: '⚠️ Khóa: nước ≤ 20 °C' };
+const ALARM_TEXT = { SENSOR_FAULT: 'Mất cảm biến DS18B20 (cổng SERVO 2) – sò lạnh đã bị TẮT',
+  TEMP_HIGH: 'Nước quá nóng (≥ 31 °C) – sò lạnh chạy tối đa', TEMP_LOW: 'Nước quá lạnh (≤ 20 °C) – kiểm tra module sưởi USB, sò đã tắt',
   TIME_INVALID: 'Chưa có giờ (mất Internet, mạch không có RTC) – lịch cho ăn tạm dừng, bấm “Đồng bộ giờ từ trình duyệt”' };
 function renderAlarms() {
   const t = S.tele || {}, msgs = [];
   if (t.alarm && t.alarm !== 'NONE') msgs.push('🚨 ' + (ALARM_TEXT[t.alarm] || t.alarm));
+  if (t.pump === false) msgs.push('💧 Bơm nước đang TẮT' + (t.cool_need_pump ? ' – sò lạnh tạm khóa' : ''));
   if (t.safe_mode) msgs.push('📴 SAFE MODE: mất broker, thiết bị vẫn tự điều khiển');
   if (t.buf_count > 0) msgs.push(`💾 ${t.buf_count} bản ghi đang chờ gửi bù`);
   if (S.lastRx && Date.now() - S.lastRx > STALE_MS) msgs.push(`⏱ ${Math.round((Date.now() - S.lastRx) / 1000)} s chưa nhận dữ liệu`);
@@ -554,11 +592,11 @@ async function loadStats() {
     document.querySelectorAll('.rl').forEach(e => e.textContent = hours >= 168 ? '7 ngày' : hours + 'h');
     $('s-avg').textContent = f(t.temp_avg, 2); $('s-min').textContent = f(t.temp_min, 2); $('s-max').textContent = f(t.temp_max, 2);
     $('s-err').textContent = f(t.track_err_avg, 2); $('s-errmax').textContent = f(t.track_err_max, 2); $('s-band').textContent = f(t.in_band_pct, 0);
-    $('s-cool').textContent = f(t.cool_avg, 0); $('s-heat').textContent = f(t.heat_avg, 0);
-    $('s-coolmin').textContent = s.cool_runtime_min; $('s-heatmin').textContent = s.heat_runtime_min;
+    $('s-cool').textContent = f(t.cool_avg, 0); $('s-pump').textContent = f(t.pump_on_pct, 0);
+    $('s-coolmin').textContent = s.cool_runtime_min; $('s-pumpmin').textContent = s.pump_runtime_min; $('s-pumpsw').textContent = s.events.pump_switches ?? 0;
     $('s-wh').textContent = f(s.energy_wh, 1); $('s-cost').textContent = s.cost_vnd;
-    $('s-coolwh').textContent = f(s.cool_wh, 1); $('s-heatwh').textContent = f(s.heat_wh, 1);
-    setIfIdle($('set-cool'), s.settings.cool_w); setIfIdle($('set-heat'), s.settings.heat_w); setIfIdle($('set-tariff'), s.settings.tariff_vnd_per_kwh);
+    $('s-coolwh').textContent = f(s.cool_wh, 1); $('s-pumpwh').textContent = f(s.pump_wh, 1);
+    setIfIdle($('set-cool'), s.settings.cool_w); setIfIdle($('set-pump'), s.settings.pump_w); setIfIdle($('set-tariff'), s.settings.tariff_vnd_per_kwh);
   } catch (e) { log('API', 'stats: ' + e.message, 'text-rose-400'); }
 }
 async function loadHistory(hours) {
@@ -571,7 +609,7 @@ async function loadHistory(hours) {
     const ds = tempChart.data.datasets;
     tempChart.data.labels = points.map(p => lab(p.bucket));
     ds[0].data = points.map(p => p.temp_avg); ds[1].data = points.map(p => p.temp_max); ds[2].data = points.map(p => p.temp_min);
-    ds[3].data = points.map(p => p.sp); ds[4].data = points.map(p => p.cool); ds[5].data = points.map(p => p.heat);
+    ds[3].data = points.map(p => p.sp); ds[4].data = points.map(p => p.cool); ds[5].data = points.map(p => p.pump);
     tempChart.update();
     $('chart-note').textContent = points.length ? `Database: ${points.length} điểm (${points.reduce((a, p) => a + p.samples, 0)} mẫu), gộp ${step}/điểm · vùng tô = min–max` : 'Chưa có dữ liệu trong khoảng này';
   } catch (e) { $('chart-note').textContent = 'Lỗi tải lịch sử: ' + e.message; }
@@ -587,7 +625,7 @@ async function loadCharts() {
     S.days = en.points;
     energyChart.data.labels = en.points.map(p => p.day.slice(5));
     energyChart.data.datasets[0].data = en.points.map(p => p.cool_wh);
-    energyChart.data.datasets[1].data = en.points.map(p => p.heat_wh);
+    energyChart.data.datasets[1].data = en.points.map(p => p.pump_wh);
     energyChart.update();
   } catch (e) { log('API', 'charts: ' + e.message, 'text-rose-400'); }
 }
@@ -597,7 +635,7 @@ async function loadEvents() {
     const type = $('ev-filter').value;
     const { events } = await api(`/api/events?limit=100${type ? '&type=' + encodeURIComponent(type) : ''}`);
     $('ev-body').innerHTML = events.length ? '' : '<tr><td class="text-slate-500">Chưa có dữ liệu.</td></tr>';
-    const color = { alarm: 'text-rose-400', feed: 'text-amber-300', pid: 'text-violet-300', setpoint: 'text-violet-300', mode: 'text-cyan-300',
+    const color = { alarm: 'text-rose-400', feed: 'text-amber-300', pid: 'text-violet-300', setpoint: 'text-violet-300', mode: 'text-cyan-300', pump: 'text-emerald-300',
                     recovered: 'text-emerald-300', error: 'text-rose-400', feed_reject: 'text-rose-300', feed_skip: 'text-amber-500' };
     for (const e of events) {
       const tr = document.createElement('tr');
@@ -613,7 +651,7 @@ function cmdText(p = {}) {
   const x = [p.device ?? '?'];
   if (p.action) x.push(p.action);
   if (p.value !== undefined) x.push(p.value);
-  if (p.device === 'pid') x.push(['kp', 'ki', 'kd', 'db'].filter(k => p[k] !== undefined).map(k => `${k}=${p[k]}`).join(' '));
+  if (p.device === 'pid') x.push(['kp', 'ki', 'kd', 'db', 'heater_sp', 'cool_need_pump'].filter(k => p[k] !== undefined).map(k => `${k}=${p[k]}`).join(' '));
   if (p.slots !== undefined) x.push(p.slots || '(tắt)');
   return x.join(' ');
 }
@@ -642,7 +680,7 @@ $('set-save').onclick = async () => {
   if (!S.apiOk) return log('API', 'Backend chưa kết nối', 'text-rose-400');
   try {
     await api('/api/settings', { method: 'PUT', body: JSON.stringify({
-      cool_w: +$('set-cool').value, heat_w: +$('set-heat').value, tariff_vnd_per_kwh: +$('set-tariff').value }) });
+      cool_w: +$('set-cool').value, pump_w: +$('set-pump').value, tariff_vnd_per_kwh: +$('set-tariff').value }) });
     log('API', 'Đã lưu thông số tính điện năng', 'text-emerald-300'); loadStats(); loadCharts();
   } catch (e) { log('API', e.message, 'text-rose-400'); }
 };
@@ -669,7 +707,7 @@ $('range-tabs').onclick = e => {
 // ===================================================================================
 // CHATBOT
 // ===================================================================================
-const QUICK = ['Nhiệt độ hiện tại', 'Sai số PID hôm nay', 'Nhiệt độ cao nhất hôm nay', 'Sò lạnh chạy bao lâu',
+const QUICK = ['Nhiệt độ hiện tại', 'Sai số PID hôm nay', 'Nhiệt độ cao nhất hôm nay', 'Sò lạnh và bơm chạy bao lâu',
   'Hôm nay tốn bao nhiêu điện', 'Hôm nay cho ăn mấy lần', 'Có cảnh báo nào không', 'Lệnh gần đây'];
 $('chat-quick').innerHTML = QUICK.map(q => `<button class="tab" data-q="${q}">${q}</button>`).join('');
 $('chat-quick').onclick = e => { const b = e.target.closest('button'); if (b) ask(b.dataset.q); };
